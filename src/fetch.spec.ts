@@ -896,8 +896,8 @@ describe('fetch', () => {
         });
 
         it('keeps the idle timer armed by comment heartbeats', async () => {
-            // arrange: idle window 50ms; the stream delivers a ': ping\n\n'
-            // comment line every 35ms. Each incoming block must re-arm the
+            // arrange: idle window 60ms; the stream delivers a ': ping\n\n'
+            // comment line every 25ms. Each incoming block must re-arm the
             // timer, so no TimeoutError retry may fire while bytes keep
             // flowing; the 5th read hangs until the caller aborts:
             const ctrl = new AbortController();
@@ -916,7 +916,7 @@ describe('fetch', () => {
                                 ++readCount;
                                 return readCount <= 4
                                     ? new Promise(resolve =>
-                                        globalThis.setTimeout(() => resolve({ value: ping, done: false }), 35))
+                                        globalThis.setTimeout(() => resolve({ value: ping, done: false }), 25))
                                     : new Promise<never>((_resolve, reject) => {
                                         const signal = init.signal as AbortSignal;
                                         signal.addEventListener('abort', () => reject(signal.reason));
@@ -927,17 +927,17 @@ describe('fetch', () => {
                     },
                 } as unknown as Response));
 
-            // act: aborts land between the last byte (~140ms) and its deadline (~190ms):
+            // act: aborts land between the last byte (~100ms) and its deadline (~160ms):
             const promise = fetch.fetchEventSource('/api/sse', {
                 signal: ctrl.signal,
                 openWhenHidden: true,
-                idleTimeoutMs: 50,
+                idleTimeoutMs: 60,
                 retryIntervalMs: 5,
                 onopen: async () => { },
                 onerror: onerrorSpy,
                 fetch: fetchSpy as any,
             });
-            await new Promise(resolve => globalThis.setTimeout(resolve, 160));
+            await new Promise(resolve => globalThis.setTimeout(resolve, 130));
             ctrl.abort();
             await promise;
 

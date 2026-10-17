@@ -114,7 +114,7 @@ The `last-event-id` header that retries send back is managed by the library. Fro
 By default, automatic retries happen 1000ms after the previous attempt failed. Two options tune that schedule:
 
 * `retryIntervalMs` — the base interval between automatic retries (default `1000`). Intervals returned from `onerror` always take precedence. The interval the server sends in a `retry:` field replaces the automatic schedule and, per the SSE spec, persists across reconnections until the server sends a different value.
-* `maxRetryIntervalMs` — turns every consecutive automatic retry into an exponential ramp (`retryIntervalMs` → 2× → 4× → …) capped at this value. The ramp resets to the base each time a connection is successfully established again, and intervals explicitly returned from `onerror` are never fed into it.
+* `maxRetryIntervalMs` — turns every consecutive automatic retry into an exponential ramp (`retryIntervalMs` → 2× → 4× → …) capped at this value; the clamp applies from the very first retry, so a cap below the base governs there too. The ramp resets to the base — or to the cap when the cap is lower — each time a connection is successfully established again, and intervals explicitly returned from `onerror` are never fed into it.
 
 Beyond explicit failures, some proxies and dead networks terminate a connection *silently* — no FIN, no error, just silence. With SSE that means the promise never resolves and no callback ever fires. `idleTimeoutMs` catches that:
 
@@ -143,7 +143,10 @@ fetchEventSource('/api/sse', {
     signal: controller.signal,
     onopen(response) {
         clearTimeout(handshakeTimer); // response arrived: the handshake is over
-        if (response.status !== 200 || !response.headers.get('content-type')?.startsWith('text/event-stream')) {
+        // this custom onopen replaced the default validation: keep its exact
+        // semantics — the MIME essence, compared case-insensitively:
+        const essence = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
+        if (response.status !== 200 || essence !== 'text/event-stream') {
             throw new Error('not an SSE stream');
         }
     },
@@ -160,7 +163,7 @@ timeout.addEventListener('abort', () => controller.abort(timeout.reason), { once
 // ...then pass controller.signal as the init signal
 ```
 
-One engine note for idle timeouts and the deadline above alike: browsers without abort-reason support (Chrome < 98, Firefox < 97, Safari < 15.4) surface the routed `err` to onerror as a plain `AbortError` instead of `TimeoutError` — retries are unaffected either way, since the library never inspects the error type.
+Two engine notes. First, `idleTimeoutMs` routes its stall through `onerror` as the attempt's abort `err` — on engines without abort-reason support (Chrome < 98, Firefox < 97, Safari < 15.4) that `err` arrives as a plain `AbortError` instead of a `TimeoutError` DOMException; retries are unaffected either way, since the library never inspects the error type. Second, the caller-side deadlines above never reach `onerror` at all — a caller abort resolves the promise — and on those same engines every abort reason, including `timeout.reason` in the forwarding snippet above, degenerates into a generic `AbortError`, so an observing listener cannot distinguish a timeout from a manual abort; the connection still closes either way.
 
 # Running under Node.js
 
