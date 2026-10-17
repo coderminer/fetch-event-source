@@ -377,5 +377,32 @@ describe('parse', () => {
             // assert:
             expect(msgNum).toBe(1);
         });
+
+        it('ignores retry values that are not only ASCII digits, per spec', () => {
+            // arrange:
+            let msgNum = 0;
+            const next = parse.getMessages(_id => {
+                fail('id should not be called');
+            }, _retry => {
+                fail('retry should not be called');
+            }, msg => {
+                ++msgNum;
+                expect(msg).toEqual({
+                    data: '',
+                    id: '',
+                    event: '',
+                    retry: undefined,
+                });
+            });
+
+            // act:
+            next(encoder.encode('retry: 42abc'), 5);
+            next(encoder.encode('retry:  42'), 5);
+            next(encoder.encode('retry: -5'), 5);
+            next(encoder.encode(''), -1);
+
+            // assert:
+            expect(msgNum).toBe(1);
+        });
     });
 });

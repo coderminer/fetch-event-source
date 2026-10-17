@@ -163,9 +163,10 @@ export function getMessages(
                     onId(message.id = value);
                     break;
                 case 'retry':
-                    const retry = parseInt(value, 10);
-                    if (!isNaN(retry)) { // per spec, ignore non-integers
-                        onRetry(message.retry = retry);
+                    // per spec, the value must consist of only ASCII digits;
+                    // ' 42' (leading padding) and '42abc' are ignored:
+                    if (/^\d+$/.test(value)) {
+                        onRetry(message.retry = parseInt(value, 10));
                     }
                     break;
             }

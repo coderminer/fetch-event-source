@@ -7,16 +7,19 @@ const LastEventId = 'last-event-id';
 
 export interface FetchEventSourceInit extends RequestInit {
     /**
-     * The request headers. FetchEventSource only supports the Record<string,string> format.
+     * The request headers. Supports the Record<string,string>, Headers and
+     * string-pair-array formats (the object form is mutated for retries, the
+     * others are normalized once at the start).
      */
-    headers?: Record<string, string>,
+    headers?: Record<string, string> | Headers | [string, string][],
 
     /**
      * Called when a response is received. Use this to validate that the response
      * actually matches what you expect (and throw if it doesn't.) If not provided,
      * will default to a basic validation to ensure the content-type is text/event-stream.
+     * May be async.
      */
-    onopen?: (response: Response) => Promise<void>,
+    onopen?: (response: Response) => void | Promise<void>,
 
     /**
      * Called when a message is received. NOTE: Unlike the default browser
@@ -71,8 +74,19 @@ export function fetchEventSource(input: RequestInfo, {
         return Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
-        // make a copy of the input headers since we may modify it below:
-        const headers = { ...inputHeaders };
+        // make a working copy of the input headers since we may modify it below;
+        // also normalize the Headers and string-pair-array formats, which would
+        // otherwise silently disappear in the object spread:
+        let headers: Record<string, string>;
+        if (inputHeaders instanceof Headers) {
+            headers = {};
+            inputHeaders.forEach((value, key) => { headers[key] = value; });
+        } else if (Array.isArray(inputHeaders)) {
+            headers = {};
+            inputHeaders.forEach(([key, value]) => { headers[key] = value; });
+        } else {
+            headers = { ...inputHeaders };
+        }
         if (!headers.accept) {
             headers.accept = EventStreamContentType;
         }
@@ -93,15 +107,17 @@ export function fetchEventSource(input: RequestInfo, {
         let retryTimer = 0;
         function dispose() {
             globalThis.document?.removeEventListener('visibilitychange', onVisibilityChange);
+            inputSignal?.removeEventListener('abort', onAbort);
             globalThis.clearTimeout(retryTimer);
             curRequestController.abort();
         }
 
         // if the incoming signal aborts, dispose resources and resolve:
-        inputSignal?.addEventListener('abort', () => {
+        function onAbort() {
             dispose();
             resolve(); // don't waste time constructing/logging errors
-        });
+        }
+        inputSignal?.addEventListener('abort', onAbort);
 
         const fetch = inputFetch ?? globalThis.fetch;
         const onopen = inputOnOpen ?? defaultOnOpen;
@@ -114,7 +130,12 @@ export function fetchEventSource(input: RequestInfo, {
             const currentController = new AbortController();
             curRequestController = currentController;
             try {
-                const response = await fetch(input, {
+                // a Request body can only be read once, so each attempt gets
+                // its own clone of the input (the original is never consumed,
+                // which previously made non-GET retries fail permanently with
+                // "body used already"):
+                const attemptInput = input instanceof Request ? input.clone() : input;
+                const response = await fetch(attemptInput, {
                     ...rest,
                     headers,
                     signal: currentController.signal,

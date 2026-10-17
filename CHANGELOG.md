@@ -9,6 +9,11 @@
 - **Retries/Abort:** fixed a race condition where an aborted attempt's error handler inspected the wrong `AbortController`, causing duplicate connections when quickly switching tabs (see #94/#95)
 - **Retries/Abort:** aborted connections are now closed before scheduling a retry, preventing leaked streams (see #7)
 - **Retries/Abort:** errors thrown from an **async** `onclose` are now awaited and routed through `onerror` like sync errors (see #90)
+- **Retries/Abort:** the caller's `AbortSignal` listener is removed once the connection ends, so long-lived signals no longer accumulate a listener per connection
+- **Retries:** `Request` inputs are cloned per attempt; retried connections no longer fail permanently with "body already used" when the caller passes a body-carrying `Request`
+- **Headers:** `Headers` and `[string, string][]` header inputs are normalized instead of silently disappearing in the object spread (see #37); the type now accepts all three forms
+- **Parsing:** `retry:` is only honored for all-ASCII-digit values per the spec (`retry: 42abc` / `retry:  42` were previously parsed leniently via `parseInt`; native `EventSource` ignores them)
+- **Compat:** `onopen` may now be sync (`void | Promise<void>`, it was already awaited; see #31), and built `.d.ts` files keep interface documentation (`removeComments: false`, see #56)
 - **Compat:** standardized on `globalThis` and optionally chained `document` access, enabling use from web workers and extension background scripts even with default options (see #8, #21, #41, #71)
 - **Packaging:** npm package now ships `src/` so the bundled (but previously unresolvable) sourcemaps work instead of producing bundler warnings (see #18, #105); spec build outputs are excluded per the existing intent
 

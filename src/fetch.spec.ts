@@ -58,5 +58,112 @@ describe('fetch', () => {
             expect(onerrorSpy).toHaveBeenCalledWith(sentinel);
             expect(fetchSpy.calls.count()).toBe(1); // no retry was scheduled
         });
+
+        it('normalizes Headers and string-pair-array header inputs', async () => {
+            // arrange:
+            // a fresh Response per call: response bodies can only be read once
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake(
+                () => new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            const options = {
+                onopen: async () => { },
+                onclose: async () => { },
+                fetch: fetchSpy as any,
+            };
+
+            // act:
+            await fetch.fetchEventSource('/api/sse', {
+                ...options,
+                headers: new Headers({ Authorization: 'Bearer t1' }),
+            });
+            await fetch.fetchEventSource('/api/sse', {
+                ...options,
+                headers: [['Authorization', 'Bearer t2']] as [string, string][],
+            });
+
+            // assert:
+            // note: Headers normalizes keys to lowercase per the fetch spec;
+            // the string-pair-array form keeps keys as given:
+            const initHeaders1 = (fetchSpy.calls.argsFor(0)[1] as RequestInit).headers as Record<string, string>;
+            expect(initHeaders1).toEqual(jasmine.objectContaining({
+                authorization: 'Bearer t1',
+                accept: 'text/event-stream',
+            }));
+            const initHeaders2 = (fetchSpy.calls.argsFor(1)[1] as RequestInit).headers as Record<string, string>;
+            expect(initHeaders2).toEqual(jasmine.objectContaining({
+                Authorization: 'Bearer t2',
+                accept: 'text/event-stream',
+            }));
+        });
+
+        it('falls back to arrayBuffer when the polyfilled response has no body stream', async () => {
+            // arrange:
+            const onmessage = jasmine.createSpy('onmessage');
+            const fakeResponse = {
+                body: null,
+                arrayBuffer: async () => new TextEncoder().encode('data: polyfill\n\n').buffer,
+                headers: { get: () => 'text/event-stream' },
+            } as unknown as Response;
+            const fetchSpy = jasmine.createSpy('fetch').and.resolveTo(fakeResponse);
+
+            // act:
+            await fetch.fetchEventSource('/api/sse', {
+                onopen: async () => { },
+                onclose: async () => { },
+                onmessage,
+                fetch: fetchSpy as any,
+            });
+
+            // assert:
+            expect(onmessage).toHaveBeenCalledWith(jasmine.objectContaining({ data: 'polyfill' }));
+        });
+
+        it('removes its abort listener from the caller signal when done', async () => {
+            // arrange:
+            const ctrl = new AbortController();
+            const removeSpy = spyOn(ctrl.signal, 'removeEventListener').and.callThrough();
+            const okResponse = new Response('', { headers: { 'content-type': 'text/event-stream' } });
+            const fetchSpy = jasmine.createSpy('fetch').and.resolveTo(okResponse);
+
+            // act:
+            await fetch.fetchEventSource('/api/sse', {
+                signal: ctrl.signal,
+                onopen: async () => { },
+                onclose: async () => { },
+                fetch: fetchSpy as any,
+            });
+
+            // assert:
+            expect(removeSpy).toHaveBeenCalledWith('abort', jasmine.any(Function));
+        });
+
+        it('retries with a fresh clone of a Request input and never consumes the original body', async () => {
+            // arrange:
+            const input = new Request('http://example.invalid/sse', { method: 'POST', body: '{"a":1}' });
+            const okResponse = new Response('', { headers: { 'content-type': 'text/event-stream' } });
+            let calls = 0;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake(() => {
+                ++calls;
+                return calls === 1
+                    ? Promise.reject(new Error('gateway down'))
+                    : Promise.resolve(okResponse);
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource(input, {
+                openWhenHidden: true,
+                onopen: async () => { },
+                onerror: () => 0, // retry immediately
+                fetch: fetchSpy as any,
+            });
+            while (calls < 2) {
+                await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+            }
+            await promise;
+
+            // assert:
+            const firstAttemptInput = fetchSpy.calls.argsFor(0)[0] as Request;
+            expect(firstAttemptInput).not.toBe(input); // a clone was fetched
+            expect(input.bodyUsed).toBe(false); // the original body is intact for future retries
+        });
     });
 });
