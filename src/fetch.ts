@@ -82,8 +82,9 @@ export interface FetchEventSourceInit extends Omit<RequestInit, 'headers'> {
      * (retryIntervalMs → 2x → 4x → …) until the cap is reached; the interval
      * resets to its base once a connection is successfully established again
      * (onopen resolves). Intervals explicitly returned from onerror are
-     * honored as given and never fed into the backoff, and while the server
-     * sends `retry:` field values, they replace the whole automatic schedule.
+     * honored as given and never fed into the backoff. A server-sent
+     * `retry:` field value replaces the whole automatic schedule in turn
+     * and stays in effect until the server sends a different one.
      */
     maxRetryIntervalMs?: number;
 
