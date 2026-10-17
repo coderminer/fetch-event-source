@@ -17,7 +17,7 @@ Verified guidance for agents working on `@microsoft/fetch-event-source` (single-
 - Language target is ES2017 + DOM lib; CI matrix is Node 18.x/20.x (`.github/workflows/node.js.yml`). Don't introduce syntax or deps beyond that baseline.
 
 ## Build & test
-- Tests run against **compiled JS**, not TS sources: `jasmine.json` sets `spec_dir: "lib"`. `npm test` handles this itself (`pretest` runs the build). Reference output: 26 specs, 0 failures, ~92% line coverage.
+- Tests run against **compiled JS**, not TS sources: `jasmine.json` sets `spec_dir: "lib"`. `npm test` handles this itself (`pretest` runs the build). Reference output: 27 specs, 0 failures, ~92% line coverage.
 ```
 npm test          # build + nyc jasmine (npm ci first)
 npx jasmine --config=jasmine.json   # tests only, requires a prior build

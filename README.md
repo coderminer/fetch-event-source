@@ -101,6 +101,8 @@ It also works from web workers and extension background/service scripts: DOM API
 
 Known limitations for retries: retried connections replay the original request. For non-GET requests that carry state or a one-time body, the default auto-retry/auto-reopen (on error or tab switch) can duplicate side effects on the server — provide an `onerror` callback (throw to stop) and consider `openWhenHidden: true` for these requests.
 
+Abort semantics: `abort()` on the provided signal stops the connection and **resolves** the returned promise without calling `onclose` or `onerror` (the promise never rejects on abort). To react to an abort, add a listener on the signal itself. Aborting works at any phase — during the handshake, mid-stream, or while a retry timer is pending; the in-flight attempt is cancelled immediately and no retry is scheduled afterwards.
+
 # Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a

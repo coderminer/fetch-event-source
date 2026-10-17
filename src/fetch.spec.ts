@@ -165,5 +165,28 @@ describe('fetch', () => {
             expect(firstAttemptInput).not.toBe(input); // a clone was fetched
             expect(input.bodyUsed).toBe(false); // the original body is intact for future retries
         });
+
+        it('cancels the in-flight request when the caller aborts before onopen', async () => {
+            // arrange: simulate a server that never responds:
+            let capturedSignal: AbortSignal | null = null;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake((_input: any, init: RequestInit) => {
+                capturedSignal = init.signal as AbortSignal;
+                return new Promise<Response>(() => { /* never settles */ });
+            });
+            const ctrl = new AbortController();
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                signal: ctrl.signal,
+                openWhenHidden: true,
+                fetch: fetchSpy as any,
+            });
+            ctrl.abort();
+            await promise;
+
+            // assert:
+            expect(capturedSignal!.aborted).toBe(true); // the attempt's signal is aborted
+            expect(fetchSpy.calls.count()).toBe(1); // no retry is scheduled after abort
+        });
     });
 });
