@@ -1,4 +1,5 @@
 import * as fetch from './fetch';
+import * as api from './index';
 
 describe('fetch', () => {
     describe('fetchEventSource', () => {
@@ -323,6 +324,19 @@ describe('fetch', () => {
             // assert:
             await expectAsync(promise).toBeRejectedWithError('user-custom-stop');
             expect(fetchSpy.calls.count()).toBe(1);
+        });
+    });
+
+    describe('index barrel', () => {
+        it('re-exports exactly the public runtime surface, keeping the barrel trivial', () => {
+            // the specs import ./fetch and ./parse directly, so the barrel
+            // would otherwise live entirely outside the execution path; this
+            // smoke spec keeps it wired and pins its shape (new public value
+            // exports must update this assertion deliberately):
+            expect(Object.keys(api).sort()).toEqual([
+                'EventStreamContentType',
+                'fetchEventSource',
+            ]);
         });
     });
 });

@@ -6,7 +6,7 @@ lib/**/*.spec.*
 src/*.spec.ts
 .nycrc
 jasmine.json
-tsconfig.json
+tsconfig*.json
 *.md
 
 ## IntellIJ files

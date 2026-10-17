@@ -9,7 +9,10 @@
  * files are picked up automatically) plus the fixed doc/package whitelist
  * below. scripts/ itself is deliberately not scanned so this script can never
  * self-trigger. To quote a marker verbatim in a doc, put the literal token
- * `scan-exempt` on the same line:
+ * `scan-exempt` on the same line. Treat an added `scan-exempt` as a review
+ * red flag: it exempts the WHOLE line — all marker checks AND the code-fence
+ * check — wherever it sits on the line, so it is only allowed when the line
+ * genuinely quotes a marker:
  */
 const fs = require('fs');
 const path = require('path');

@@ -29,7 +29,8 @@
 ### Changed
 - Restored the missing `npm test` script and `jasmine`/`nyc` devDependencies that were accidentally removed in the v2.0.1 "dependabot fix"; `npm test` now runs a build first
 - CI pins action SHAs (#108), adds a Dependabot config, and runs on Node 18.x/20.x (the lockfile is lockfileVersion 2, which npm 6 on Node 12/14 cannot install)
-- `posttest` now scans the shipped sources/docs for automation tool-payload remnants (`scripts/check-tool-fragments.cjs`; it walks `src/` plus the docs so new files are covered automatically, honors inline `scan-exempt` markers, and cannot self-trigger); `scripts/` is not published (`.npmignore`); `.nycrc` drops the legacy `all: true` sweep and excludes spec/`.d.ts`/`.cjs` artifacts so coverage totals reflect the library source only
+- `posttest` now scans the shipped sources/docs for automation tool-payload remnants (`scripts/check-tool-fragments.cjs`; it walks `src/` plus the docs so new files are covered automatically, honors inline `scan-exempt` markers, and cannot self-trigger); `scripts/` is not published and the literal-vs-glob `tsconfig.json` entry is fixed to `tsconfig*.json` so `tsconfig.esm.json` leaves the tarball too (`.npmignore`); `.nycrc` drops the legacy `all: true` sweep and excludes spec/`.d.ts`/`.cjs` artifacts so coverage totals reflect the library source only
+- a smoke spec imports `./index` so the public re-export barrel stays inside the execution path and coverage (new value exports must deliberately update its assertion)
 
 ## 2.0.1
 This release adds support for esmodule imports (see #4).
