@@ -1,4 +1,4 @@
-# Contributing to @microsoft/fetch-event-source
+# Contributing to @coderminer/fetch-event-source
 
 Please take a moment to review this document in order to make the contribution process easy and effective for everyone involved.
 
@@ -7,7 +7,7 @@ Following these guidelines helps to communicate that you respect the time of the
 
 ## Using the issue tracker
 
-The [issue tracker](https://github.com/Azure/fetch-event-source/issues) is
+The [issue tracker](https://github.com/coderminer/fetch-event-source/issues) is
 the preferred channel for [bug reports](#bugs), [features requests](#features)
 and [submitting pull requests](#pull-requests).
 
@@ -140,9 +140,9 @@ Once the PR has been reviewed, follow these steps to cut a release:
     
     c. `git push origin v<packageVersion>`
 
-3. [Create a new github release](https://github.com/Azure/iot-ux-fluent-controls/releases/new) on the new tag. Use the tag name as the release title and the copy the changelog into the description.
+3. [Create a new github release](https://github.com/coderminer/fetch-event-source/releases/new) on the new tag. Use the tag name as the release title and the copy the changelog into the description.
 
 
 **IMPORTANT**: By submitting a patch, you agree to allow the project
-owners to license your work under the terms of the [MIT License](LICENSE.txt).
+owners to license your work under the terms of the [MIT License](LICENSE).
 

@@ -1,12 +1,12 @@
 .github/
 .nyc_output/
 coverage/
-lib/*.map
-lib/*.spec.*
-src/
+scripts/
+lib/**/*.spec.*
+src/*.spec.ts
 .nycrc
 jasmine.json
-tsconfig.json
+tsconfig*.json
 *.md
 
 ## IntellIJ files

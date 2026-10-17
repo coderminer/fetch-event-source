@@ -5,9 +5,11 @@ name: Node.js CI
 
 on:
   push:
-    branches: [ main ]
+    # `fix/patches` is the fork's active development branch; CI must fire on it
+    # as well as on main.
+    branches: [ main, fix/patches ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, fix/patches ]
 
 jobs:
   build:
@@ -16,12 +18,14 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [12.x, 14.x]
+        # the lockfile is lockfileVersion 2, which requires npm 7+;
+        # Node 12.x/14.x runners ship npm 6 and fail `npm ci`:
+        node-version: [18.x, 20.x]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e # v2.8.0
     - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v1
+      uses: actions/setup-node@f1f314fca9dfce2769ece7d933488f076716723e # v1.4.6
       with:
         node-version: ${{ matrix.node-version }}
     - run: npm ci
