@@ -1,4 +1,7 @@
 # Fetch Event Source
+
+> **Maintained fork.** The upstream [`@microsoft/fetch-event-source`](https://github.com/Azure/fetch-event-source) is archived and receives no further releases; this repo continues it and publishes on npm as [`@coderminer/fetch-event-source`](https://www.npmjs.com/package/@coderminer/fetch-event-source). It ships a batch of SSE/fetch spec-conformance and robustness fixes on top of the last upstream release — see the [changelog](CHANGELOG.md).
+
 This package provides a better API for making [Event Source requests](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events) - also known as server-sent events - with all the features available in the [Fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API).
 
 The [default browser EventSource API](https://developer.mozilla.org/en-US/docs/Web/API/EventSource) imposes several restrictions on the type of request you're allowed to make: the [only parameters](https://developer.mozilla.org/en-US/docs/Web/API/EventSource/EventSource#Parameters) you're allowed to pass in are the `url` and `withCredentials`, so:
@@ -17,7 +20,7 @@ In addition, this library also plugs into the browser's [Page Visibility API](ht
 
 # Install
 ```sh
-npm install @microsoft/fetch-event-source
+npm install @coderminer/fetch-event-source
 ```
 
 # Usage
@@ -29,7 +32,7 @@ sse.onmessage = (ev) => {
 };
 
 // AFTER:
-import { fetchEventSource } from '@microsoft/fetch-event-source';
+import { fetchEventSource } from '@coderminer/fetch-event-source';
 
 await fetchEventSource('/api/sse', {
     onmessage(ev) {
@@ -107,14 +110,4 @@ Abort semantics: `abort()` on the provided signal stops the connection and **res
 
 # Contributing
 
-This project welcomes contributions and suggestions.  Most contributions require you to agree to a
-Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.opensource.microsoft.com.
-
-When you submit a pull request, a CLA bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., status check, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
-
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+Contributions are welcome! For significant changes, please open an issue first so we can agree on the approach. `npm test` is the gate for every change: it builds both the CJS and ESM outputs, runs the spec suite with coverage over the compiled library, and fails on leftover editor/automation debris in the sources or docs. See [CONTRIBUTING.md](CONTRIBUTING.md) for the detailed workflow.

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Verified guidance for agents working on `@microsoft/fetch-event-source` (single-package TypeScript library, ~4 source files, no monorepo, no lint/format config).
+Verified guidance for agents working on `@coderminer/fetch-event-source` — the maintained community fork of the (archived) `@microsoft/fetch-event-source` (single-package TypeScript library, ~4 source files, no monorepo, no lint/format config).
 
 ## Architecture
 - Public API surface is only what `src/index.ts` re-exports: `fetchEventSource`, `EventStreamContentType`, `FetchEventSourceInit`, `EventSourceMessage`.
@@ -37,7 +37,8 @@ npx jasmine --config=jasmine.json   # tests only, requires a prior build
 - `package-lock.json` is lockfileVersion 2 → requires npm 7+; that's why the CI matrix is Node 18.x/20.x (Node 12/14 runners ship npm 6 and fail `npm ci`).
 - Actions are pinned to full-length SHAs (PR #108, dependabot.yml updates them weekly). Bump the SHA + keep the version comment when upgrading an action manually.
 - Upstream `Azure/fetch-event-source` is archived: pushing is impossible, open PRs land here by applying their diffs (PR refs are fetchable via `git fetch origin '+refs/pull/*/head:refs/remotes/origin/pr/*'`).
+- This repo publishes as `@coderminer/fetch-event-source` on npm — the `@microsoft` scope belongs to Microsoft — sourced from github.com/coderminer/fetch-event-source. The fork releases start at version 3.0.0 to signal the behavior-tightening fixes above the archived upstream 2.0.2.
 
 ## Release conventions (CONTRIBUTING.md)
 - Version bumps and `CHANGELOG.md` updates happen inside the PR; publishing waits for review (prereleases use `npm publish --tag prerelease`).
-- Release flow: squash-merge the PR (copy description into commit text) → tag the merge commit `v<version>` → push the tag → create a GitHub release with changelog as description. A Microsoft CLA bot will comment on PRs; follow it.
+- Release flow: squash-merge the PR (copy description into commit text) → tag the merge commit `v<version>` → push the tag → create a GitHub release with changelog as description → `npm publish` (prepublishOnly runs build + test; `publishConfig.access: "public"` covers the scoped publish).

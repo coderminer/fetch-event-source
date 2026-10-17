@@ -5,9 +5,11 @@ name: Node.js CI
 
 on:
   push:
-    branches: [ main ]
+    # `fix/patches` is the fork's active development branch; CI must fire on it
+    # as well as on main.
+    branches: [ main, fix/patches ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, fix/patches ]
 
 jobs:
   build:

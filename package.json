@@ -1,13 +1,16 @@
 {
-  "name": "@microsoft/fetch-event-source",
-  "version": "2.0.2",
-  "description": "A better API for making Event Source requests, with all the features of fetch()",
-  "homepage": "https://github.com/Azure/fetch-event-source#readme",
-  "repository": "github:Azure/fetch-event-source",
+  "name": "@coderminer/fetch-event-source",
+  "version": "3.0.0",
+  "description": "A better API for making Event Source requests, with all the features of fetch() - maintained fork of @microsoft/fetch-event-source",
+  "homepage": "https://github.com/coderminer/fetch-event-source#readme",
+  "repository": "github:coderminer/fetch-event-source",
   "bugs": {
-    "url": "https://github.com/Azure/fetch-event-source/issues"
+    "url": "https://github.com/coderminer/fetch-event-source/issues"
   },
-  "author": "Microsoft",
+  "author": "coderminer",
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT",
   "main": "lib/cjs/index.js",
   "module": "lib/esm/index.js",

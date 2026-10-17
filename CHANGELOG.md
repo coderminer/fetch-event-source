@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 3.0.0
+First release of the maintained community fork, published as [`@coderminer/fetch-event-source`](https://www.npmjs.com/package/@coderminer/fetch-event-source). The upstream [`@microsoft/fetch-event-source`](https://github.com/Azure/fetch-event-source) is archived at 2.0.2 and receives no further releases; this fork ships that baseline plus every fix documented in the 2.0.2 section below (that work post-dates the last upstream publish and was never released under the upstream name), plus the packaging/coverage/hygiene modernization noted there.
+
+The major-version bump signals observable behavior changes carried by the spec-conformance fixes — most notably: `204` responses stop reconnecting and reject the promise, the default `onopen` requires a strict `200` with `text/event-stream` essence, messages without any `data` field are no longer dispatched, and normalized header names are lowercased. There is no re-architecture; the public API surface is unchanged.
+
 ## 2.0.2
 ### Fixed
 - **Parsing (spec):** a message whose data buffer is empty is no longer dispatched to `onmessage`, and the event-type buffer is still cleared, exactly as in the [dispatch step of the SSE spec](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation); comment-only / id-only / retry-only blocks no longer fire `onmessage` with empty data (see #15)
