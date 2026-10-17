@@ -599,6 +599,56 @@ describe('fetch', () => {
             expect(onerrorSpy).not.toHaveBeenCalled();
             expect(fetchSpy.calls.count()).toBe(1); // no retry followed the abort
         });
+
+        it('applies a server-sent retry: interval and keeps it until replaced', async () => {
+            // arrange: attempt 1 delivers a `retry: 75` field mid-stream and
+            // then dies; later attempts fail before anything is sent. The
+            // server's reconnection time is sticky per spec, so every
+            // automatic retry keeps using 75 — never the configured base:
+            const setTimeoutSpy = spyOn(globalThis, 'setTimeout').and.callThrough();
+            const encoder = new TextEncoder();
+            let calls = 0;
+            let pulled = 0;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake(() => {
+                ++calls;
+                return calls === 1
+                    ? Promise.resolve(new Response(
+                        new ReadableStream({
+                            pull(controller) {
+                                if (++pulled === 1) {
+                                    controller.enqueue(encoder.encode('retry: 75\n\n'));
+                                } else {
+                                    controller.error(new Error('midstream cut'));
+                                }
+                            },
+                        }),
+                        { headers: { 'content-type': 'text/event-stream' } },
+                    ))
+                    : calls < 4
+                        ? Promise.reject(new Error('gateway down'))
+                        : Promise.resolve(new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                retryIntervalMs: 10, // must never be used while the server interval stands
+                onopen: async () => { },
+                onerror: () => { }, // leave the automatic path
+                fetch: fetchSpy as any,
+            });
+            while (calls < 4) {
+                await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+            }
+            await promise;
+
+            // assert: three automatic retries, all at the server's 75ms:
+            const scheduled = setTimeoutSpy.calls.allArgs()
+                .filter((args: any[]) => args[1] === 75)
+                .map((args: any[]) => args[1]);
+            expect(scheduled).toEqual([75, 75, 75]);
+            expect(fetchSpy.calls.count()).toBe(4);
+        });
     });
 
     describe('index barrel', () => {

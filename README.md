@@ -98,11 +98,11 @@ fetchEventSource('/api/sse', {
 
 # Dynamic request headers
 
-If header values must be computed at connection time — tokens that rotate, signatures, anything that goes stale — pass a function instead of a plain value. It is evaluated once per (re)connection (not per attempt, *for* each attempt), may return any accepted header format, synchronously or as a promise:
+If header values must be computed at connection time — tokens that rotate, signatures, anything that goes stale — pass a function instead of a plain value. It is evaluated once per (re)connection — that is, for every attempt including retries — and may return any accepted header format, synchronously or as a promise:
 
 ```ts
 fetchEventSource('/api/sse', {
-    headers: () => ({ 'authorization': `Bearer ${await getToken()}` }),
+    headers: async () => ({ authorization: `Bearer ${await getToken()}` }),
     // ...
 });
 ```
@@ -113,7 +113,7 @@ The `last-event-id` header that retries send back is managed by the library; per
 
 By default, automatic retries happen 1000ms after the previous attempt failed. Two options tune that schedule:
 
-* `retryIntervalMs` — the base interval between automatic retries (default `1000`). Intervals returned from `onerror` always take precedence. The interval the server sends in a `retry:` field replaces the automatic schedule for as long as the server keeps sending it.
+* `retryIntervalMs` — the base interval between automatic retries (default `1000`). Intervals returned from `onerror` always take precedence. The interval the server sends in a `retry:` field replaces the automatic schedule and, per the SSE spec, persists across reconnections until the server sends a different value.
 * `maxRetryIntervalMs` — turns every consecutive automatic retry into an exponential ramp (`retryIntervalMs` → 2× → 4× → …) capped at this value. The ramp resets to the base each time a connection is successfully established again, and intervals explicitly returned from `onerror` are never fed into it.
 
 Beyond explicit failures, some proxies and dead networks terminate a connection *silently* — no FIN, no error, just silence. With SSE that means the promise never resolves and no callback ever fires. `idleTimeoutMs` catches that:
@@ -130,13 +130,22 @@ fetchEventSource('/api/sse', {
 });
 ```
 
-The timer runs only while the response body is being read (after `onopen` resolved), counts any incoming bytes — including comment-line heartbeats — and is disabled by default (a silent server is legal SSE). A handshake that never even produces a response is better handled by combining the standard platform primitive into the signal:
+The timer runs only while the response body is being read (after `onopen` resolved), counts any incoming bytes — including comment-line heartbeats — and is disabled by default (a silent server is legal SSE). Pass a positive number: `0` (like any non-finite value) disables the timer, while a negative value behaves like a ~0ms timer that aborts every attempt almost immediately. A handshake that never even produces a response is out of the idle timer's scope; give the whole connection a deadline with the standard platform primitive instead:
 
 ```ts
 fetchEventSource('/api/sse', {
-    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
+    signal: AbortSignal.timeout(5000), // the handshake must start responding within 5s
     // ...
 });
+```
+
+To keep both a caller-controlled abort and a deadline in one signal, combine with `AbortSignal.any` — available from Chrome 116+, Firefox 124+, Safari 17.4+ and Node.js 20.3+ (feature-detect it: `typeof AbortSignal.any === 'function'`). On older runtimes, forward the timeout's abort into the caller's controller instead:
+
+```ts
+const controller = new AbortController();
+const timeout = AbortSignal.timeout(5000);
+timeout.addEventListener('abort', () => controller.abort(timeout.reason), { once: true });
+// ...then pass controller.signal as the init signal
 ```
 
 # Running under Node.js
