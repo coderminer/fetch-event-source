@@ -1,9 +1,8 @@
 .github/
 .nyc_output/
 coverage/
-lib/*.map
-lib/*.spec.*
-src/
+lib/**/*.spec.*
+src/*.spec.ts
 .nycrc
 jasmine.json
 tsconfig.json
