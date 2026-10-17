@@ -56,7 +56,10 @@ export interface FetchEventSourceInit extends Omit<RequestInit, 'headers'> {
      * operation. Otherwise, you can return an interval (in milliseconds) after
      * which the request will automatically retry (with the last-event-id).
      * If this callback is not specified, or it returns undefined, fetchEventSource
-     * will treat every error as retriable and will try again after 1 second.
+     * treats every error as retriable and schedules the next attempt after the
+     * automatic interval: retryIntervalMs (default 1000), overridden by any
+     * server-sent retry: field value, ramping exponentially under
+     * maxRetryIntervalMs.
      * With the default onopen, a 204 response stops reconnection: onerror is
      * still called once (any returned interval is ignored), no onclose is
      * emitted, and the returned promise then rejects with the stop error.
@@ -94,9 +97,12 @@ export interface FetchEventSourceInit extends Omit<RequestInit, 'headers'> {
      * networks can kill a connection without signaling it; a stall like that
      * is treated as a retriable error and routed through onerror. The idle
      * timer runs only while the body stream is being read (i.e. after onopen
-     * resolved); a stalled handshake is better handled by combining
-     * `AbortSignal.timeout` into the init `signal`. Disabled by default: a
-     * silent SSE server is legal, so no timer exists unless you ask for one.
+     * resolved); a stalled handshake (no response at all) is out of its scope
+     * — give onopen a caller-side deadline it can clear, or put
+     * `AbortSignal.timeout` into the init `signal` only when a deadline for
+     * the ENTIRE connection lifetime (healthy streams included) is what you
+     * want. Disabled by default: a silent SSE server is legal, so no timer
+     * exists unless you ask for one.
      */
     idleTimeoutMs?: number;
 
@@ -124,11 +130,15 @@ export function fetchEventSource(input: RequestInfo, {
     }
     return new Promise<void>((resolve, reject) => {
         // The last event id observed on the current stream, sent back as the
-        // last-event-id header of the next attempt and cleared again when the
-        // server resets the id. Tracked separately from the caller's headers:
-        // header inputs are normalized fresh per (re)connection (see create),
-        // so state has to survive into the new copies:
-        let lastEventId = '';
+        // last-event-id header of every next attempt. Three-state: undefined
+        // until the server sends its first id (the caller's own header value,
+        // if any, passes through unchanged); a non-empty id overrides the
+        // caller's value for that field; an EMPTY `id:` field is an explicit
+        // reset and clears the header entirely — the caller's stale value must
+        // not resurrect after a reset. Tracked separately from the caller's
+        // headers: header inputs are normalized fresh per (re)connection (see
+        // create), so state has to survive into the new copies:
+        let lastEventId: string | undefined;
 
         // The server-controlled reconnection time, set by `retry:` field
         // values and honored until the server sends a different one:
@@ -136,9 +146,13 @@ export function fetchEventSource(input: RequestInfo, {
 
         // next automatic retry interval for exponential backoff: it grows only
         // while maxRetryIntervalMs is configured, caps there, and resets to
-        // the base whenever a connection is successfully established:
+        // the (cap-clamped) base whenever a connection is successfully
+        // established:
         const baseRetryInterval = inputRetryIntervalMs ?? DefaultRetryInterval;
-        let backoffNext = baseRetryInterval;
+        // the cap constrains the chosen interval itself, so even a cap lower
+        // than the base applies from the FIRST automatic retry on:
+        const retryCap = maxRetryIntervalMs ?? Number.POSITIVE_INFINITY;
+        let backoffNext = Math.min(baseRetryInterval, retryCap);
 
         let retryTimer = 0;
         let stopReconnecting = false;
@@ -194,18 +208,30 @@ export function fetchEventSource(input: RequestInfo, {
                 reject(onerrorErr);
                 return;
             }
+            if (inputSignal?.aborted) {
+                // the caller aborted while INSIDE this onerror call (the
+                // documented close mechanism): onAbort already resolved the
+                // promise — arming a timer here would only spawn connections
+                // nobody is listening to:
+                return;
+            }
             const interval = explicit === undefined || explicit === null
                 ? (serverRetryInterval ?? backoffNext)
                 : explicit;
             retryTimer = globalThis.setTimeout(create, interval);
             // only automatic retries ramp up, capped at the configured maximum:
             if (explicit == null && maxRetryIntervalMs != null) {
-                backoffNext = Math.min(backoffNext * 2, maxRetryIntervalMs);
+                backoffNext = Math.min(backoffNext * 2, retryCap);
             }
         }
 
         let curRequestController: AbortController;
         function onVisibilityChange() {
+            // a retry that would fire while the page goes hidden must wait for
+            // the page: cancel it here and let create() run directly on the
+            // visible edge. This also stops a stale timer from tearing down
+            // the fresh connection that the visible-edge create() just opened:
+            globalThis.clearTimeout(retryTimer);
             curRequestController.abort(); // close existing request on every visibility change
             if (!globalThis.document?.hidden) {
                 create(); // page is now visible again, recreate request.
@@ -233,6 +259,14 @@ export function fetchEventSource(input: RequestInfo, {
         const fetch = inputFetch ?? globalThis.fetch;
         const onopen = inputOnOpen ?? defaultOnOpen;
         async function create() {
+            // a caller abort closes the WHOLE operation (including aborts from
+            // inside onerror — README: abort IS the close mechanism); the
+            // promise is resolved via onAbort, and a connection opened now
+            // would have no owner. Bail out instead of trusting an armed
+            // retry timer:
+            if (inputSignal?.aborted) {
+                return;
+            }
             // close any previous, errored request before retrying, so it
             // doesn't stay open in the background:
             curRequestController?.abort();
@@ -247,7 +281,11 @@ export function fetchEventSource(input: RequestInfo, {
             let idleTimer = 0;
             let idleFired = false;
             const resetIdle = () => {
-                if (!idleTimeoutMs) {
+                // falsy values disable the timer, as do non-finite ones —
+                // Infinity would be clamped by setTimeout to ~0/1ms and abort
+                // every attempt instantly. A negative value is honored as
+                // ~0ms by design (documented):
+                if (!idleTimeoutMs || !Number.isFinite(idleTimeoutMs)) {
                     return;
                 }
                 globalThis.clearTimeout(idleTimer);
@@ -274,10 +312,17 @@ export function fetchEventSource(input: RequestInfo, {
                         ? await inputHeaders()
                         : inputHeaders,
                 );
-                if (lastEventId) {
-                    // the server-assigned id governs: it always wins over
-                    // whatever the caller supplied for the same field:
-                    headers[LastEventId] = lastEventId;
+                if (lastEventId !== undefined) {
+                    if (lastEventId) {
+                        // non-empty: the server-assigned id governs, it wins
+                        // over whatever the caller supplied for the same field:
+                        headers[LastEventId] = lastEventId;
+                    } else {
+                        // an empty `id:` resets the buffer per the SSE spec: the
+                        // header must go away, not fall back to the caller's
+                        // stale value:
+                        delete headers[LastEventId];
+                    }
                 }
                 const response = await fetch(attemptInput, {
                     ...rest,
@@ -301,7 +346,7 @@ export function fetchEventSource(input: RequestInfo, {
                 await onopen(response);
 
                 // a successful reconnection resets the backoff schedule:
-                backoffNext = baseRetryInterval;
+                backoffNext = Math.min(baseRetryInterval, retryCap);
 
                 // every arriving block of bytes re-arms the idle timer, whether
                 // or not it parses into a full message (comment heartbeats

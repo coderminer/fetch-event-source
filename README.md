@@ -107,7 +107,7 @@ fetchEventSource('/api/sse', {
 });
 ```
 
-The `last-event-id` header that retries send back is managed by the library; per the SSE spec it always wins over a value the function returns for that field.
+The `last-event-id` header that retries send back is managed by the library. From the attempt after the server first sends an `id:` field, the tracked value governs: a non-empty id wins over any caller-supplied value for that field (per the SSE spec), and an empty `id:` field is an explicit reset that removes the header entirely.
 
 # Retry scheduling and dead-connection detection
 
@@ -130,16 +130,28 @@ fetchEventSource('/api/sse', {
 });
 ```
 
-The timer runs only while the response body is being read (after `onopen` resolved), counts any incoming bytes — including comment-line heartbeats — and is disabled by default (a silent server is legal SSE). Pass a positive number: `0` (like any non-finite value) disables the timer, while a negative value behaves like a ~0ms timer that aborts every attempt almost immediately. A handshake that never even produces a response is out of the idle timer's scope; give the whole connection a deadline with the standard platform primitive instead:
+The timer runs only while the response body is being read (after `onopen` resolved), counts any incoming bytes — including comment-line heartbeats — and is disabled by default (a silent server is legal SSE). Pass a positive number: `0` and any non-finite value (`NaN`, `Infinity`) disable the timer — `setTimeout` would clamp `Infinity` to ~0ms otherwise — while a negative value is honored as a ~0ms timer that aborts every attempt almost immediately. A handshake that never even produces a response is out of the idle timer's scope. To time-box ONLY the handshake, arm a caller-side deadline and clear it in `onopen` — note this replaces the default response validation, so its checks move into your `onopen`:
 
 ```ts
+const controller = new AbortController();
+const handshakeTimer = setTimeout(
+    () => controller.abort(new DOMException('No response within 5s', 'TimeoutError')),
+    5000,
+);
+
 fetchEventSource('/api/sse', {
-    signal: AbortSignal.timeout(5000), // the handshake must start responding within 5s
+    signal: controller.signal,
+    onopen(response) {
+        clearTimeout(handshakeTimer); // response arrived: the handshake is over
+        if (response.status !== 200 || !response.headers.get('content-type')?.startsWith('text/event-stream')) {
+            throw new Error('not an SSE stream');
+        }
+    },
     // ...
 });
 ```
 
-To keep both a caller-controlled abort and a deadline in one signal, combine with `AbortSignal.any` — available from Chrome 116+, Firefox 124+, Safari 17.4+ and Node.js 20.3+ (feature-detect it: `typeof AbortSignal.any === 'function'`). On older runtimes, forward the timeout's abort into the caller's controller instead:
+`AbortSignal.timeout(5000)` as the init signal is the one-liner version — but it caps the ENTIRE connection lifetime (healthy long streams included) and cannot be canceled once armed; use it only when that lifetime cap is what you want. Either deadline can coexist with a caller-controlled abort on modern runtimes via `AbortSignal.any` — available from Chrome 116+, Firefox 124+, Safari 17.4+ and Node.js 18.17+/20.3+ (feature-detect it: `typeof AbortSignal.any === 'function'`). On older runtimes, forward the timeout's abort into the caller's controller instead:
 
 ```ts
 const controller = new AbortController();
@@ -147,6 +159,8 @@ const timeout = AbortSignal.timeout(5000);
 timeout.addEventListener('abort', () => controller.abort(timeout.reason), { once: true });
 // ...then pass controller.signal as the init signal
 ```
+
+One engine note for idle timeouts and the deadline above alike: browsers without abort-reason support (Chrome < 98, Firefox < 97, Safari < 15.4) surface the routed `err` to onerror as a plain `AbortError` instead of `TimeoutError` — retries are unaffected either way, since the library never inspects the error type.
 
 # Running under Node.js
 
