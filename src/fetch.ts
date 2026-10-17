@@ -8,8 +8,9 @@ const LastEventId = 'last-event-id';
 export interface FetchEventSourceInit extends RequestInit {
     /**
      * The request headers. Supports the Record<string,string>, Headers and
-     * string-pair-array formats (the object form is mutated for retries, the
-     * others are normalized once at the start).
+     * string-pair-array formats; all are normalized into a single copy
+     * (lowercased keys, duplicates comma-joined like Header.append) which is
+     * then mutated with the last-event-id header on retries.
      */
     headers?: Record<string, string> | Headers | [string, string][],
 
@@ -74,18 +75,29 @@ export function fetchEventSource(input: RequestInfo, {
         return Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
-        // make a working copy of the input headers since we may modify it below;
-        // also normalize the Headers and string-pair-array formats, which would
-        // otherwise silently disappear in the object spread:
-        let headers: Record<string, string>;
-        if (inputHeaders instanceof Headers) {
-            headers = {};
-            inputHeaders.forEach((value, key) => { headers[key] = value; });
-        } else if (Array.isArray(inputHeaders)) {
-            headers = {};
-            inputHeaders.forEach(([key, value]) => { headers[key] = value; });
+        // normalize all three accepted header forms into one working copy with
+        // lowercased keys and comma-joined duplicate values, matching the
+        // Headers append/combine semantics; the copy (not the caller's input)
+        // is mutated with the last-event-id header on retries. We check for a
+        // global Headers constructor before using it: schemas such as
+        // fetch polyfills may provide fetch without it, and instances from
+        // other realms fail instanceof anyway:
+        let headers: Record<string, string> = {};
+        const setHeader = (key: string, value: string) => {
+            key = key.toLowerCase();
+            headers[key] = key in headers ? `${headers[key]}, ${value}` : value;
+        };
+        if (Array.isArray(inputHeaders)) {
+            inputHeaders.forEach(([key, value]) => setHeader(key, value));
+        } else if (typeof Headers !== 'undefined' && inputHeaders instanceof Headers) {
+            // Headers#forEach passes (value, key); normalize to (key, value):
+            inputHeaders.forEach((value: string, key: string) => setHeader(key, value));
+        } else if (inputHeaders && typeof (inputHeaders as any).forEach === 'function') {
+            // duck-typed Headers-like (polyfills, other realms) follow the same
+            // Headers#forEach (value, key) contract:
+            (inputHeaders as any).forEach((value: any, key: any) => setHeader(key, value));
         } else {
-            headers = { ...inputHeaders };
+            Object.keys(inputHeaders ?? {}).forEach((key) => setHeader(key, (inputHeaders as any)[key]));
         }
         if (!headers.accept) {
             headers.accept = EventStreamContentType;
@@ -105,6 +117,7 @@ export function fetchEventSource(input: RequestInfo, {
 
         let retryInterval = DefaultRetryInterval;
         let retryTimer = 0;
+        let stopReconnecting = false;
         function dispose() {
             globalThis.document?.removeEventListener('visibilitychange', onVisibilityChange);
             inputSignal?.removeEventListener('abort', onAbort);
@@ -133,16 +146,34 @@ export function fetchEventSource(input: RequestInfo, {
                 // a Request body can only be read once, so each attempt gets
                 // its own clone of the input (the original is never consumed,
                 // which previously made non-GET retries fail permanently with
-                // "body used already"):
-                const attemptInput = input instanceof Request ? input.clone() : input;
+                // "body used already"). Check the constructor exists first:
+                // some fetch polyfills provide fetch without Request:
+                const attemptInput = typeof Request !== 'undefined' && input instanceof Request
+                    ? input.clone()
+                    : input;
                 const response = await fetch(attemptInput, {
                     ...rest,
                     headers,
                     signal: currentController.signal,
                 });
 
-                await onopen(response);
+                // per the spec, a 204 response tells the client to stop reconnecting:
+                if (!inputOnOpen && response.status === 204) {
+                    stopReconnecting = true;
+                    throw new Error('Received a 204 response; per spec the client stops reconnecting');
+                }
+
+                // dominate the...</think><tool_call>edit<arg_key>newString</arg_key><arg_value>                // per the spec, a 204 response tells the client to stop reconnecting:
                 
+                // native EventSource reconnects to the final URL after
+                // redirects; only string inputs are self-sufficient (a Request
+                // input would lose its method/body this way):
+                if (typeof input === 'string' && response.url && response.url !== input) {
+                    input = response.url;
+                }
+
+                await onopen(response);
+
                 await getBytes(response, getLines(getMessages(id => {
                     if (id) {
                         // store the id and send it back on the next retry:
@@ -161,6 +192,12 @@ export function fetchEventSource(input: RequestInfo, {
             } catch (err) {
                 if (!currentController.signal.aborted) {
                     // if we haven't aborted the request ourselves:
+                    if (stopReconnecting) {
+                        // the server told us to stop reconnecting (204):
+                        dispose();
+                        reject(err);
+                        return;
+                    }
                     try {
                         // check if we need to retry:
                         const interval: any = onerror?.(err) ?? retryInterval;
@@ -180,8 +217,12 @@ export function fetchEventSource(input: RequestInfo, {
 }
 
 function defaultOnOpen(response: Response) {
+    // per the EventSource spec, a SSE connection is only established over a
+    // 200 response with the text/event-stream MIME type; MIME types are
+    // compared by their case-insensitive essence (ignoring parameters):
     const contentType = response.headers.get('content-type');
-    if (!contentType?.startsWith(EventStreamContentType)) {
-        throw new Error(`Expected content-type to be ${EventStreamContentType}, Actual: ${contentType}`);
+    const essence = contentType?.split(';')[0]?.trim()?.toLowerCase();
+    if (!response.ok || essence !== EventStreamContentType) {
+        throw new Error(`Expected a 200 response with a ${EventStreamContentType} content-type, got status ${response.status} and content-type ${contentType ?? 'none'}`);
     }
 }

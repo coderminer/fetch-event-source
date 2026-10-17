@@ -20,16 +20,29 @@ export interface EventSourceMessage {
  * @returns {Promise<void>} A promise that will be resolved when the stream closes.
  */
 export async function getBytes(response: Response, onChunk: (arr: Uint8Array) => void) {
+    // per the SSE spec, the stream is decoded as UTF-8, which strips one
+    // leading UTF-8 BOM; strip it from the first chunk (in either branch):
+    let first = true;
+    const stripLeadingBom = (arr: Uint8Array) => {
+        if (first) {
+            first = false;
+            if (arr.length >= 3 && arr[0] === 0xef && arr[1] === 0xbb && arr[2] === 0xbf) {
+                return arr.subarray(3);
+            }
+        }
+        return arr;
+    };
+
     const reader = response.body?.getReader();
     if (reader) {
         let result: ReadableStreamReadResult<Uint8Array>;
         while (!(result = await reader.read()).done) {
-            onChunk(result.value);
+            onChunk(stripLeadingBom(result.value));
         }
     } else {
         // some fetch polyfills (e.g. in mobile webviews) don't provide a
         // ReadableStream body; fall back to reading the whole response:
-        onChunk(new Uint8Array(await response.arrayBuffer()));
+        onChunk(stripLeadingBom(new Uint8Array(await response.arrayBuffer())));
     }
 }
 
@@ -133,21 +146,37 @@ export function getMessages(
     // return a function that can process each incoming line buffer:
     return function onLine(line: Uint8Array, fieldLength: number) {
         if (line.length === 0) {
-            // empty line denotes end of message. If the data buffer's last
-            // character is a U+000A LINE FEED, remove it before dispatching
-            // (per the SSE spec), then trigger the callback and start a new
-            // message:
+            // empty line denotes end of message. Per the SSE spec, a message
+            // with no data field is not dispatched: the data and event-type
+            // buffers are just cleared:
+            if (message.data === '') {
+                message = newMessage();
+                return;
+            }
+
+            // if the data buffer's last character is a U+000A LINE FEED
+            // character, then remove the last character from the data buffer:
             if (message.data.endsWith('\n')) {
                 message.data = message.data.substring(0, message.data.length - 1);
             }
+
+            // empty line denotes end of message. Trigger the callback and start a new message:
             onMessage?.(message);
             message = newMessage();
-        } else if (fieldLength > 0) { // exclude comments and lines with no values
-            // line is of format "<field>:<value>" or "<field>: <value>"
-            // https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
-            const field = decoder.decode(line.subarray(0, fieldLength));
-            const valueOffset = fieldLength + (line[fieldLength + 1] === ControlChars.Space ? 2 : 1);
-            const value = decoder.decode(line.subarray(valueOffset));
+        } else if (fieldLength !== 0) { // comment lines (first char is ':') are ignored, per the spec
+            // per the spec, a line without a colon is processed as a field
+            // name with an empty value; only lines containing a colon have a
+            // separate value:
+            const field = fieldLength === -1
+                ? decoder.decode(line)
+                : decoder.decode(line.subarray(0, fieldLength));
+            let value = '';
+            if (fieldLength !== -1) {
+                // line is of format "<field>:<value>" or "<field>: <value>"
+                // https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
+                const valueOffset = fieldLength + (line[fieldLength + 1] === ControlChars.Space ? 2 : 1);
+                value = decoder.decode(line.subarray(valueOffset));
+            }
 
             switch (field) {
                 case 'data':
@@ -160,7 +189,12 @@ export function getMessages(
                     message.event = value;
                     break;
                 case 'id':
-                    onId(message.id = value);
+                    // per spec, an id field value containing U+0000 is
+                    // ignored; other values (including the empty string,
+                    // which resets the last event id) are applied:
+                    if (!value.includes('\u0000')) {
+                        onId(message.id = value);
+                    }
                     break;
                 case 'retry':
                     // per spec, the value must consist of only ASCII digits;

@@ -4,7 +4,7 @@ Verified guidance for agents working on `@microsoft/fetch-event-source` (single-
 
 ## Architecture
 - Public API surface is only what `src/index.ts` re-exports: `fetchEventSource`, `EventStreamContentType`, `FetchEventSourceInit`, `EventSourceMessage`.
-- `src/parse.ts` — pure SSE byte-stream parser (`getBytes`/`getLines`/`getMessages`), written to the WHATWG spec (empty `data:` fields append `\n`; one trailing `\n` stripped on dispatch). Fully covered by `src/parse.spec.ts`.
+- `src/parse.ts` — pure SSE byte-stream parser (`getBytes`/`getLines`/`getMessages`), written to the WHATWG spec (empty `data:` fields append `\n`; one trailing `\n` stripped on dispatch; colon-less lines are fields with an empty value; `id` values containing U+0000 are ignored; messages with an empty data buffer are cleared, not dispatched; one leading UTF-8 BOM is stripped in both the streaming and `arrayBuffer()` paths of `getBytes`). Fully covered by `src/parse.spec.ts`.
 - `src/fetch.ts` — the fetch/retry loop. Written for browsers but keeps to `globalThis` with optional-chained `document` access, so it also runs in web workers / extension scripts and under Node test runners. Covered by `src/fetch.spec.ts` (uses stub fetches, no real network).
 - Abort/retry invariants to preserve when editing `fetch.ts`:
   1. Skip everything up front if the caller's `AbortSignal` is already aborted.
@@ -12,12 +12,14 @@ Verified guidance for agents working on `@microsoft/fetch-event-source` (single-
   3. `create()` aborts the previous attempt's controller before opening a new one (no leaked streams on retry).
   4. `onclose` is awaited so async onclose errors reach `onerror`.
   5. `dispose()` also removes the caller's abort listener (`onAbort`) — long-lived shared signals would otherwise accumulate one listener per connection.
-  6. Each attempt fetches a fresh `input.clone()` when the input is a `Request`, so retried connections never hit "body already used" and the original body is never consumed.
+  6. Each attempt fetches a fresh `input.clone()` when the input is a `Request`, so retried connections never hit "body already used" and the original body is never consumed. The constructor is existence-checked (`typeof Request !== 'undefined'`) because fetch-only polyfills don't provide it.
+  7. All three header forms are normalized once into a single lowercased Record with comma-joined duplicates (mirrors `Headers` semantics) without requiring the global `Headers` constructor; the `accept` default check and the `last-event-id` mutation operate on that copy. `Headers`-like inputs are matched by brand/duck-typing because instances from other realms fail `instanceof`.
+  8. With the default `onopen`, a `204` response sets `stopReconnecting` and throws, and the catch refuses to schedule a retry — per spec the server told the client to stop reconnecting. After a successful response, string `input`s are re-targeted at `response.url` so reconnections follow redirects like native `EventSource`; the connection itself is established only when default validation (`response.ok` + `text/event-stream` MIME essence) passes.
 - Dual output is required: `npm run build` compiles twice (CJS → `lib/cjs` via `tsconfig.json`, ESM → `lib/esm` via `tsconfig.esm.json`). `package.json` points `main`/`module`/`types` at those paths — don't change `outDir` casually. The ESM config excludes `*.spec.ts`; the CJS config compiles them.
 - Language target is ES2017 + DOM lib; CI matrix is Node 18.x/20.x (`.github/workflows/node.js.yml`). Don't introduce syntax or deps beyond that baseline.
 
 ## Build & test
-- Tests run against **compiled JS**, not TS sources: `jasmine.json` sets `spec_dir: "lib"`. `npm test` handles this itself (`pretest` runs the build). Reference output: 27 specs, 0 failures, ~92% line coverage.
+- Tests run against **compiled JS**, not TS sources: `jasmine.json` sets `spec_dir: "lib"`. `npm test` handles this itself (`pretest` runs the build). Reference output: 33 specs, 0 failures, ~92% line coverage (branches ~79% — the polyfill fallbacks and other-realm header branches are inherently hard to hit from Node).
 ```
 npm test          # build + nyc jasmine (npm ci first)
 npx jasmine --config=jasmine.json   # tests only, requires a prior build

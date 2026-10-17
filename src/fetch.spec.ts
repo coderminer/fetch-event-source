@@ -77,12 +77,17 @@ describe('fetch', () => {
             });
             await fetch.fetchEventSource('/api/sse', {
                 ...options,
-                headers: [['Authorization', 'Bearer t2']] as [string, string][],
+                headers: [['Authorization', 'Bearer t2'], ['X-A', '1'], ['X-A', '2']] as [string, string][],
+            });
+            await fetch.fetchEventSource('/api/sse', {
+                ...options,
+                headers: { Accept: 'application/json' },
             });
 
             // assert:
-            // note: Headers normalizes keys to lowercase per the fetch spec;
-            // the string-pair-array form keeps keys as given:
+            // all three forms are normalized identically: keys are lowercased
+            // and duplicate keys are comma-joined like Headers.append; a
+            // user-supplied accept replaces the default instead of merging:
             const initHeaders1 = (fetchSpy.calls.argsFor(0)[1] as RequestInit).headers as Record<string, string>;
             expect(initHeaders1).toEqual(jasmine.objectContaining({
                 authorization: 'Bearer t1',
@@ -90,9 +95,15 @@ describe('fetch', () => {
             }));
             const initHeaders2 = (fetchSpy.calls.argsFor(1)[1] as RequestInit).headers as Record<string, string>;
             expect(initHeaders2).toEqual(jasmine.objectContaining({
-                Authorization: 'Bearer t2',
+                authorization: 'Bearer t2',
+                'x-a': '1, 2',
                 accept: 'text/event-stream',
             }));
+            const initHeaders3 = (fetchSpy.calls.argsFor(2)[1] as RequestInit).headers as Record<string, string>;
+            expect(initHeaders3).toEqual(jasmine.objectContaining({
+                accept: 'application/json',
+            }));
+            expect(Object.keys(initHeaders3).filter(k => k !== 'accept')).toEqual([]);
         });
 
         it('falls back to arrayBuffer when the polyfilled response has no body stream', async () => {
@@ -167,11 +178,16 @@ describe('fetch', () => {
         });
 
         it('cancels the in-flight request when the caller aborts before onopen', async () => {
-            // arrange: simulate a server that never responds:
+            // arrange: simulate a fetch that rejects with an AbortError when
+            // its signal is aborted, like the real one does:
             let capturedSignal: AbortSignal | null = null;
             const fetchSpy = jasmine.createSpy('fetch').and.callFake((_input: any, init: RequestInit) => {
                 capturedSignal = init.signal as AbortSignal;
-                return new Promise<Response>(() => { /* never settles */ });
+                return new Promise<Response>((_resolve, reject) => {
+                    (init.signal as AbortSignal).addEventListener('abort', () => {
+                        reject(new DOMException('This operation was aborted', 'AbortError'));
+                    });
+                });
             });
             const ctrl = new AbortController();
 
@@ -186,7 +202,82 @@ describe('fetch', () => {
 
             // assert:
             expect(capturedSignal!.aborted).toBe(true); // the attempt's signal is aborted
-            expect(fetchSpy.calls.count()).toBe(1); // no retry is scheduled after abort
+            // the aborted attempt's rejection must not schedule a retry:
+            expect(fetchSpy.calls.count()).toBe(1);
+        });
+
+        it('reconnects to the final URL after redirects, for string inputs', async () => {
+            // arrange: like native EventSource, a connection that follows a
+            // redirect makes its NEXT connection target the redirected URL;
+            // the update lands after a response carries response.url, so the
+            // retry following it must use the new target:
+            const redirectedResponse = {
+                ok: false,
+                status: 502,
+                headers: { get: () => 'text/html' },
+                url: 'https://redirected.example/sse',
+                body: null,
+                arrayBuffer: async () => new ArrayBuffer(0),
+            } as unknown as Response;
+            const inputs: unknown[] = [];
+            let calls = 0;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake((reqInput: any) => {
+                ++calls;
+                inputs.push(reqInput);
+                return calls === 1
+                    ? Promise.reject(new Error('gateway down'))
+                    : calls === 2
+                        ? Promise.resolve(redirectedResponse)
+                        // a normal constructed Response carries url === '':
+                        : Promise.resolve(new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                onopen: async (response) => {
+                    if (!response.ok) {
+                        throw new Error('bad gateway');
+                    }
+                },
+                onerror: () => 0, // retry immediately
+                fetch: fetchSpy as any,
+            });
+            while (calls < 3) {
+                await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+            }
+            await promise;
+
+            // assert:
+            expect(inputs[0]).toBe('/api/sse');
+            // the second attempt still used the original url (the update lands
+            // after attempt 2's response reported the redirect):
+            expect(inputs[1]).toBe('/api/sse');
+            // the third attempt used the final (redirected) url:
+            expect(inputs[2]).toBe('https://redirected.example/sse');
+        });
+
+        it('stops reconnecting when the default onopen sees a 204 response', async () => {
+            // arrange: per the spec, a 204 response tells the client the
+            // connection is no longer open and to stop reconnecting:
+            const notModifiedResponse = {
+                ok: true,
+                status: 204,
+                headers: { get: () => 'text/event-stream' },
+                body: null,
+                arrayBuffer: async () => new ArrayBuffer(0),
+            } as unknown as Response;
+            const fetchSpy = jasmine.createSpy('fetch').and.resolveTo(notModifiedResponse);
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                fetch: fetchSpy as any,
+            });
+
+            // assert:
+            await expectAsync(promise).toBeRejectedWithError('Received a 204 response; per spec the client stops reconnecting');
+            expect(fetchSpy.calls.count()).toBe(1); // no further attempts
         });
     });
 });

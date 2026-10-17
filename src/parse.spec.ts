@@ -221,14 +221,8 @@ describe('parse', () => {
                 expect(id).toEqual('abc');
             }, _retry => {
                 fail('retry should not be called');
-            }, msg => {
+            }, _msg => {
                 ++msgNum;
-                expect(msg).toEqual({
-                    id: 'abc',
-                    data: '',
-                    event: '',
-                    retry: undefined,
-                });
             });
 
             // act:
@@ -237,7 +231,9 @@ describe('parse', () => {
             next(encoder.encode(''), -1);
 
             // assert:
-            expect(msgNum).toBe(1);
+            // the block has no data field, so per spec it is not dispatched;
+            // the id still applies for reconnection:
+            expect(msgNum).toBe(0);
         });
         
         it('ignore non-integer retry', () => {
@@ -246,14 +242,8 @@ describe('parse', () => {
                 fail('id should not be called');
             }, _retry => {
                 fail('retry should not be called');
-            }, msg => {
+            }, _msg => {
                 ++msgNum;
-                expect(msg).toEqual({
-                    id: '',
-                    data: '',
-                    event: '',
-                    retry: undefined,
-                });
             });
 
             // act:
@@ -261,7 +251,8 @@ describe('parse', () => {
             next(encoder.encode(''), -1);
 
             // assert:
-            expect(msgNum).toBe(1);
+            // the block has no data field, so per spec it is not dispatched:
+            expect(msgNum).toBe(0);
         });
 
         it('skip comment-only messages', () => {
@@ -271,14 +262,8 @@ describe('parse', () => {
                 expect(id).toEqual('123');
             }, _retry => {
                 fail('retry should not be called');
-            }, msg => {
+            }, _msg => {
                 ++msgNum;
-                expect(msg).toEqual({
-                    retry: undefined,
-                    id: '123',
-                    event: 'foo ',
-                    data: '',
-                });
             });
 
             // act:
@@ -289,7 +274,8 @@ describe('parse', () => {
             next(encoder.encode(''), -1);
 
             // assert:
-            expect(msgNum).toBe(1);
+            // the block has no data field, so per spec it is not dispatched:
+            expect(msgNum).toBe(0);
         });
 
         it('should append data split across multiple lines', () => {
@@ -330,14 +316,8 @@ describe('parse', () => {
                 ++idsIdx;
             }, _retry => {
                 fail('retry should not be called');
-            }, msg => {
+            }, _msg => {
                 ++msgNum;
-                expect(msg).toEqual({
-                    data: '',
-                    id: '',
-                    event: '',
-                    retry: undefined,
-                });
             });
 
             // act:
@@ -347,7 +327,9 @@ describe('parse', () => {
 
             // assert:
             expect(idsIdx).toBe(2);
-            expect(msgNum).toBe(1);
+            // the block has no data field, so per spec it is not dispatched;
+            // the id reset still happened through the callbacks above:
+            expect(msgNum).toBe(0);
         });
 
         it('should preserve newlines from empty data fields', () => {
@@ -380,19 +362,14 @@ describe('parse', () => {
 
         it('ignores retry values that are not only ASCII digits, per spec', () => {
             // arrange:
+            const retries: number[] = [];
             let msgNum = 0;
             const next = parse.getMessages(_id => {
                 fail('id should not be called');
-            }, _retry => {
-                fail('retry should not be called');
-            }, msg => {
+            }, retry => {
+                retries.push(retry);
+            }, _msg => {
                 ++msgNum;
-                expect(msg).toEqual({
-                    data: '',
-                    id: '',
-                    event: '',
-                    retry: undefined,
-                });
             });
 
             // act:
@@ -402,7 +379,109 @@ describe('parse', () => {
             next(encoder.encode(''), -1);
 
             // assert:
+            // invalid values are ignored:
+            expect(retries).toEqual([]);
+            // the block has no data field, so per spec it is not dispatched:
+            expect(msgNum).toBe(0);
+        });
+
+        it('does not dispatch a message without a data field, per spec', () => {
+            // arrange:
+            let msgNum = 0;
+            const next = parse.getMessages(_id => {
+                fail('id should not be called');
+            }, _retry => {
+                fail('retry should not be called');
+            }, msg => {
+                ++msgNum;
+                // the suppressed earlier block cleared the event-type buffer,
+                // so the dispatched message carries an empty event type:
+                expect(msg).toEqual({
+                    data: 'hi',
+                    id: '',
+                    event: '',
+                    retry: undefined,
+                });
+            });
+
+            // act:
+            next(encoder.encode('event: ping'), 5);
+            next(encoder.encode(''), -1); // data buffer empty: cleared, not dispatched
+            next(encoder.encode('data: hi'), 4);
+            next(encoder.encode(''), -1); // dispatched, with a cleared event type
+
+            // assert:
             expect(msgNum).toBe(1);
+        });
+
+        it('treats a colon-less line as a field with an empty value, per spec', () => {
+            // arrange:
+            let msgNum = 0;
+            const next = parse.getMessages(_id => {
+                fail('id should not be called');
+            }, _retry => {
+                fail('retry should not be called');
+            }, msg => {
+                ++msgNum;
+                expect(msg).toEqual({
+                    data: '\nhi',
+                    id: '',
+                    event: '',
+                    retry: undefined,
+                });
+            });
+
+            // act:
+            next(encoder.encode('data'), -1); // field name 'data', empty value
+            next(encoder.encode('data: hi'), 4);
+            next(encoder.encode(''), -1);
+
+            // assert:
+            expect(msgNum).toBe(1);
+        });
+
+        it('ignores id field values containing U+0000, per spec', () => {
+            // arrange:
+            const ids: string[] = [];
+            const next = parse.getMessages(id => {
+                ids.push(id);
+            }, _retry => {
+                fail('retry should not be called');
+            }, _msg => {
+                fail('message should not be dispatched'); // no data field
+            });
+
+            // act:
+            next(encoder.encode('id: \u0000bad'), 2);
+            next(encoder.encode('id: good'), 2);
+            next(encoder.encode(''), -1);
+
+            // assert:
+            expect(ids).toEqual(['good']);
+        });
+
+        it('strips a leading UTF-8 byte order mark, per spec', async () => {
+            // arrange:
+            const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+            const content = encoder.encode('data: with-bom\n\n');
+            const payload = new Uint8Array(bom.length + content.length);
+            payload.set(bom);
+            payload.set(content, bom.length);
+            const response = new Response(payload);
+            const data: string[] = [];
+            const next = parse.getLines(parse.getMessages(_id => {
+                fail('id should not be called');
+            }, _retry => {
+                fail('retry should not be called');
+            }, msg => {
+                data.push(msg.data);
+            }));
+
+            // act:
+            await parse.getBytes(response, next);
+
+            // assert:
+            expect(data).toEqual(['with-bom']);
         });
     });
 });
