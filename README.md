@@ -97,6 +97,10 @@ This library is written in typescript and targets ES2017 features supported by a
 require('fast-text-encoding');
 ```
 
+It also works from web workers and extension background/service scripts: DOM APIs are accessed through `globalThis` with optional chaining, and hidden-tab auto-retry is skipped when no `document` exists.
+
+Known limitations for retries: retried connections replay the original request. For non-GET requests that carry state or a one-time body, the default auto-retry/auto-reopen (on error or tab switch) can duplicate side effects on the server — provide an `onerror` callback (throw to stop) and consider `openWhenHidden: true` for these requests.
+
 # Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a

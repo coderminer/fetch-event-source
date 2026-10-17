@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 2.0.2
+### Fixed
+- **Parsing:** empty `data:` fields are now preserved per [the spec](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation); previously consecutive empty data fields collapsed into nothing (see #50, #65, #104)
+- **Parsing:** fixed the TypeScript >= 4.6 build error `Cannot find name 'ReadableStreamDefaultReadResult'` (see #52, #72)
+- **Parsing/Polyfills:** `getBytes` no longer assumes `response.body` is a `ReadableStream`; fetch polyfills (e.g. mobile webviews) that lack a stream body now fall back to `response.arrayBuffer()` (see #61)
+- **Retries/Abort:** a caller-provided `AbortSignal` that was already aborted now skips the request entirely instead of opening an orphaned connection (see #106)
+- **Retries/Abort:** fixed a race condition where an aborted attempt's error handler inspected the wrong `AbortController`, causing duplicate connections when quickly switching tabs (see #94/#95)
+- **Retries/Abort:** aborted connections are now closed before scheduling a retry, preventing leaked streams (see #7)
+- **Retries/Abort:** errors thrown from an **async** `onclose` are now awaited and routed through `onerror` like sync errors (see #90)
+- **Compat:** standardized on `globalThis` and optionally chained `document` access, enabling use from web workers and extension background scripts even with default options (see #8, #21, #41, #71)
+- **Packaging:** npm package now ships `src/` so the bundled (but previously unresolvable) sourcemaps work instead of producing bundler warnings (see #18, #105); spec build outputs are excluded per the existing intent
+
+### Changed
+- Restored the missing `npm test` script and `jasmine`/`nyc` devDependencies that were accidentally removed in the v2.0.1 "dependabot fix"; `npm test` now runs a build first
+- CI pins action SHAs (#108), adds a Dependabot config, and runs on Node 18.x/20.x (the lockfile is lockfileVersion 2, which npm 6 on Node 12/14 cannot install)
+
 ## 2.0.1
 This release adds support for esmodule imports (see #4).
 
