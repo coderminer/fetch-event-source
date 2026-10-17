@@ -45,6 +45,9 @@ export interface FetchEventSourceInit extends RequestInit {
      * which the request will automatically retry (with the last-event-id).
      * If this callback is not specified, or it returns undefined, fetchEventSource
      * will treat every error as retriable and will try again after 1 second.
+     * With the default onopen, a 204 response stops reconnection: onerror is
+     * still called once (any returned interval is ignored), no onclose is
+     * emitted, and the returned promise then rejects with the stop error.
      */
     onerror?: (err: any) => number | null | undefined | void,
 
@@ -82,7 +85,10 @@ export function fetchEventSource(input: RequestInfo, {
         // global Headers constructor before using it: schemas such as
         // fetch polyfills may provide fetch without it, and instances from
         // other realms fail instanceof anyway:
-        let headers: Record<string, string> = {};
+        // null prototype so header names like `constructor` or `__proto__`
+        // (e.g. from a JSON.parse'd config) are stored as plain own
+        // properties instead of hitting the prototype chain:
+        let headers: Record<string, string> = Object.create(null);
         const setHeader = (key: string, value: string) => {
             key = key.toLowerCase();
             headers[key] = key in headers ? `${headers[key]}, ${value}` : value;
@@ -163,8 +169,6 @@ export function fetchEventSource(input: RequestInfo, {
                     throw new Error('Received a 204 response; per spec the client stops reconnecting');
                 }
 
-                // dominate the...</think><tool_call>edit<arg_key>newString</arg_key><arg_value>                // per the spec, a 204 response tells the client to stop reconnecting:
-                
                 // native EventSource reconnects to the final URL after
                 // redirects; only string inputs are self-sufficient (a Request
                 // input would lose its method/body this way):
@@ -195,6 +199,15 @@ export function fetchEventSource(input: RequestInfo, {
                     if (stopReconnecting) {
                         // the server told us to stop reconnecting (204):
                         dispose();
+                        try {
+                            // surface the stop to onerror-centric callers who do
+                            // not await the returned promise; the interval it
+                            // may return is meaningless (no retry follows):
+                            onerror?.(err);
+                        } catch (stopErr) {
+                            // an onerror that throws overrides the outcome:
+                            err = stopErr;
+                        }
                         reject(err);
                         return;
                     }
@@ -222,7 +235,7 @@ function defaultOnOpen(response: Response) {
     // compared by their case-insensitive essence (ignoring parameters):
     const contentType = response.headers.get('content-type');
     const essence = contentType?.split(';')[0]?.trim()?.toLowerCase();
-    if (!response.ok || essence !== EventStreamContentType) {
+    if (response.status !== 200 || essence !== EventStreamContentType) {
         throw new Error(`Expected a 200 response with a ${EventStreamContentType} content-type, got status ${response.status} and content-type ${contentType ?? 'none'}`);
     }
 }

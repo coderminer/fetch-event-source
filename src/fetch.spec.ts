@@ -83,6 +83,12 @@ describe('fetch', () => {
                 ...options,
                 headers: { Accept: 'application/json' },
             });
+            await fetch.fetchEventSource('/api/sse', {
+                ...options,
+                // demonstrate prototype-collision safety: a JSON.parse'd record
+                // can legitimately own the key "__proto__":
+                headers: JSON.parse('{"x-y":"z","__proto__":"weird"}') as Record<string, string>,
+            });
 
             // assert:
             // all three forms are normalized identically: keys are lowercased
@@ -104,6 +110,12 @@ describe('fetch', () => {
                 accept: 'application/json',
             }));
             expect(Object.keys(initHeaders3).filter(k => k !== 'accept')).toEqual([]);
+            // a null-prototype working copy keeps exotic names as own
+            // properties, so they are sent as-is instead of being dropped,
+            // merged with an inherited value, or hijacking the prototype:
+            const initHeaders4 = (fetchSpy.calls.argsFor(3)[1] as RequestInit).headers as Record<string, string>;
+            expect(initHeaders4['x-y']).toBe('z');
+            expect(Object.getOwnPropertyDescriptor(initHeaders4, '__proto__')!.value).toBe('weird');
         });
 
         it('falls back to arrayBuffer when the polyfilled response has no body stream', async () => {
@@ -259,7 +271,10 @@ describe('fetch', () => {
 
         it('stops reconnecting when the default onopen sees a 204 response', async () => {
             // arrange: per the spec, a 204 response tells the client the
-            // connection is no longer open and to stop reconnecting:
+            // connection is no longer open and to stop reconnecting. onerror
+            // is still invoked (so unawaited, onerror-centric callers learn
+            // about the stop), but its interval return is ignored since no
+            // retry follows:
             const notModifiedResponse = {
                 ok: true,
                 status: 204,
@@ -268,16 +283,43 @@ describe('fetch', () => {
                 arrayBuffer: async () => new ArrayBuffer(0),
             } as unknown as Response;
             const fetchSpy = jasmine.createSpy('fetch').and.resolveTo(notModifiedResponse);
+            const onerrorSpy = jasmine.createSpy('onerror').and.returnValue(99999);
 
             // act:
             const promise = fetch.fetchEventSource('/api/sse', {
                 openWhenHidden: true,
+                onerror: onerrorSpy,
                 fetch: fetchSpy as any,
             });
 
             // assert:
             await expectAsync(promise).toBeRejectedWithError('Received a 204 response; per spec the client stops reconnecting');
-            expect(fetchSpy.calls.count()).toBe(1); // no further attempts
+            expect(onerrorSpy).toHaveBeenCalledTimes(1);
+            expect(fetchSpy.calls.count()).toBe(1); // the returned interval was ignored
+        });
+
+        it('lets an onerror that throws override the outcome when reconnection stops', async () => {
+            // arrange:
+            const notModifiedResponse = {
+                ok: true,
+                status: 204,
+                headers: { get: () => 'text/event-stream' },
+                body: null,
+                arrayBuffer: async () => new ArrayBuffer(0),
+            } as unknown as Response;
+            const fetchSpy = jasmine.createSpy('fetch').and.resolveTo(notModifiedResponse);
+            const onerrorSpy = jasmine.createSpy('onerror').and.throwError('user-custom-stop');
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                onerror: onerrorSpy,
+                fetch: fetchSpy as any,
+            });
+
+            // assert:
+            await expectAsync(promise).toBeRejectedWithError('user-custom-stop');
+            expect(fetchSpy.calls.count()).toBe(1);
         });
     });
 });

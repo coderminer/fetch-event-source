@@ -20,29 +20,19 @@ export interface EventSourceMessage {
  * @returns {Promise<void>} A promise that will be resolved when the stream closes.
  */
 export async function getBytes(response: Response, onChunk: (arr: Uint8Array) => void) {
-    // per the SSE spec, the stream is decoded as UTF-8, which strips one
-    // leading UTF-8 BOM; strip it from the first chunk (in either branch):
-    let first = true;
-    const stripLeadingBom = (arr: Uint8Array) => {
-        if (first) {
-            first = false;
-            if (arr.length >= 3 && arr[0] === 0xef && arr[1] === 0xbb && arr[2] === 0xbf) {
-                return arr.subarray(3);
-            }
-        }
-        return arr;
-    };
-
+    // No explicit BOM handling here: getLines decodes the byte slices with a
+    // default TextDecoder, whose spec-mandated UTF-8 decode strips one leading
+    // BOM — including one that is split across chunks:
     const reader = response.body?.getReader();
     if (reader) {
         let result: ReadableStreamReadResult<Uint8Array>;
         while (!(result = await reader.read()).done) {
-            onChunk(stripLeadingBom(result.value));
+            onChunk(result.value);
         }
     } else {
         // some fetch polyfills (e.g. in mobile webviews) don't provide a
         // ReadableStream body; fall back to reading the whole response:
-        onChunk(stripLeadingBom(new Uint8Array(await response.arrayBuffer())));
+        onChunk(new Uint8Array(await response.arrayBuffer()));
     }
 }
 

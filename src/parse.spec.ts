@@ -461,7 +461,9 @@ describe('parse', () => {
         });
 
         it('strips a leading UTF-8 byte order mark, per spec', async () => {
-            // arrange:
+            // the stripping is done by the spec-mandated BOM removal of a
+            // default TextDecoder in getLines, not by getBytes explicitly —
+            // this test pins the end-to-end behavior:
             const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
             const content = encoder.encode('data: with-bom\n\n');
             const payload = new Uint8Array(bom.length + content.length);
@@ -482,6 +484,38 @@ describe('parse', () => {
 
             // assert:
             expect(data).toEqual(['with-bom']);
+        });
+
+        it('strips a UTF-8 byte order mark even when it is split across chunks, per spec', async () => {
+            // arrange: feed the three BOM bytes through two separate chunks; a
+            // streaming decoder must still recognize and drop the composite:
+            const payload = encoder.encode('data: split-bom\n\n');
+            const chunk2 = new Uint8Array(2 + payload.length);
+            chunk2[0] = 0xbb;
+            chunk2[1] = 0xbf;
+            chunk2.set(payload, 2);
+            const stream = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new Uint8Array([0xef]));
+                    controller.enqueue(chunk2);
+                    controller.close();
+                },
+            });
+            const response = new Response(stream);
+            const data: string[] = [];
+            const next = parse.getLines(parse.getMessages(_id => {
+                fail('id should not be called');
+            }, _retry => {
+                fail('retry should not be called');
+            }, msg => {
+                data.push(msg.data);
+            }));
+
+            // act:
+            await parse.getBytes(response, next);
+
+            // assert:
+            expect(data).toEqual(['split-bom']);
         });
     });
 });

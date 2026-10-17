@@ -103,6 +103,8 @@ Known limitations for retries: retried connections replay the original request. 
 
 Abort semantics: `abort()` on the provided signal stops the connection and **resolves** the returned promise without calling `onclose` or `onerror` (the promise never rejects on abort). To react to an abort, add a listener on the signal itself. Aborting works at any phase — during the handshake, mid-stream, or while a retry timer is pending; the in-flight attempt is cancelled immediately and no retry is scheduled afterwards.
 
+204 semantics: when using the default `onopen`, a `204` response means the server told the client to stop reconnecting. The connection is dropped, `onerror` is invoked once (its returned retry interval is ignored, an error thrown from it overrides the rejection), `onclose` is **not** fired, and the returned promise **rejects** with the stop error. With a custom `onopen`, a 204 is whatever your callback decides it to be.
+
 # Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a
