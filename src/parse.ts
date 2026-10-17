@@ -14,16 +14,22 @@ export interface EventSourceMessage {
 }
 
 /**
- * Converts a ReadableStream into a callback pattern.
- * @param stream The input ReadableStream.
+ * Converts a fetch Response body into a callback pattern.
+ * @param response The fetch Response to read from.
  * @param onChunk A function that will be called on each new byte chunk in the stream.
  * @returns {Promise<void>} A promise that will be resolved when the stream closes.
  */
-export async function getBytes(stream: ReadableStream<Uint8Array>, onChunk: (arr: Uint8Array) => void) {
-    const reader = stream.getReader();
-    let result: ReadableStreamDefaultReadResult<Uint8Array>;
-    while (!(result = await reader.read()).done) {
-        onChunk(result.value);
+export async function getBytes(response: Response, onChunk: (arr: Uint8Array) => void) {
+    const reader = response.body?.getReader();
+    if (reader) {
+        let result: ReadableStreamReadResult<Uint8Array>;
+        while (!(result = await reader.read()).done) {
+            onChunk(result.value);
+        }
+    } else {
+        // some fetch polyfills (e.g. in mobile webviews) don't provide a
+        // ReadableStream body; fall back to reading the whole response:
+        onChunk(new Uint8Array(await response.arrayBuffer()));
     }
 }
 
@@ -127,7 +133,13 @@ export function getMessages(
     // return a function that can process each incoming line buffer:
     return function onLine(line: Uint8Array, fieldLength: number) {
         if (line.length === 0) {
-            // empty line denotes end of message. Trigger the callback and start a new message:
+            // empty line denotes end of message. If the data buffer's last
+            // character is a U+000A LINE FEED, remove it before dispatching
+            // (per the SSE spec), then trigger the callback and start a new
+            // message:
+            if (message.data.endsWith('\n')) {
+                message.data = message.data.substring(0, message.data.length - 1);
+            }
             onMessage?.(message);
             message = newMessage();
         } else if (fieldLength > 0) { // exclude comments and lines with no values
@@ -139,11 +151,10 @@ export function getMessages(
 
             switch (field) {
                 case 'data':
-                    // if this message already has data, append the new value to the old.
-                    // otherwise, just set to the new value:
-                    message.data = message.data
-                        ? message.data + '\n' + value
-                        : value; // otherwise, 
+                    // append the field value to the data buffer, then append a
+                    // single U+000A LINE FEED character so empty `data:` fields
+                    // are not silently dropped (https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation):
+                    message.data = message.data + value + '\n';
                     break;
                 case 'event':
                     message.event = value;

@@ -28,8 +28,10 @@ export interface FetchEventSourceInit extends RequestInit {
     /**
      * Called when a response finishes. If you don't expect the server to kill
      * the connection, you can throw an exception here and retry using onerror.
+     * May be async; an error thrown from the async callback is routed to
+     * onerror just like a sync one.
      */
-    onclose?: () => void;
+    onclose?: () => void | Promise<void>;
 
     /**
      * Called when there is any error making the request / processing messages /
@@ -49,7 +51,7 @@ export interface FetchEventSourceInit extends RequestInit {
      */
     openWhenHidden?: boolean;
 
-    /** The Fetch function to use. Defaults to window.fetch */
+    /** The Fetch function to use. Defaults to globalThis.fetch */
     fetch?: typeof fetch;
 }
 
@@ -64,6 +66,10 @@ export function fetchEventSource(input: RequestInfo, {
     fetch: inputFetch,
     ...rest
 }: FetchEventSourceInit) {
+    // if the input signal is already aborted, don't make any requests to begin with:
+    if (inputSignal?.aborted) {
+        return Promise.resolve();
+    }
     return new Promise<void>((resolve, reject) => {
         // make a copy of the input headers since we may modify it below:
         const headers = { ...inputHeaders };
@@ -74,20 +80,20 @@ export function fetchEventSource(input: RequestInfo, {
         let curRequestController: AbortController;
         function onVisibilityChange() {
             curRequestController.abort(); // close existing request on every visibility change
-            if (!document.hidden) {
+            if (!globalThis.document?.hidden) {
                 create(); // page is now visible again, recreate request.
             }
         }
 
         if (!openWhenHidden) {
-            document.addEventListener('visibilitychange', onVisibilityChange);
+            globalThis.document?.addEventListener('visibilitychange', onVisibilityChange);
         }
 
         let retryInterval = DefaultRetryInterval;
         let retryTimer = 0;
         function dispose() {
-            document.removeEventListener('visibilitychange', onVisibilityChange);
-            window.clearTimeout(retryTimer);
+            globalThis.document?.removeEventListener('visibilitychange', onVisibilityChange);
+            globalThis.clearTimeout(retryTimer);
             curRequestController.abort();
         }
 
@@ -97,20 +103,26 @@ export function fetchEventSource(input: RequestInfo, {
             resolve(); // don't waste time constructing/logging errors
         });
 
-        const fetch = inputFetch ?? window.fetch;
+        const fetch = inputFetch ?? globalThis.fetch;
         const onopen = inputOnOpen ?? defaultOnOpen;
         async function create() {
-            curRequestController = new AbortController();
+            // close any previous, errored request before retrying, so it
+            // doesn't stay open in the background:
+            curRequestController?.abort();
+            // capture this attempt's own controller so the error handler below
+            // can't be confused by a newer attempt racing ahead of this one:
+            const currentController = new AbortController();
+            curRequestController = currentController;
             try {
                 const response = await fetch(input, {
                     ...rest,
                     headers,
-                    signal: curRequestController.signal,
+                    signal: currentController.signal,
                 });
 
                 await onopen(response);
                 
-                await getBytes(response.body!, getLines(getMessages(id => {
+                await getBytes(response, getLines(getMessages(id => {
                     if (id) {
                         // store the id and send it back on the next retry:
                         headers[LastEventId] = id;
@@ -122,17 +134,17 @@ export function fetchEventSource(input: RequestInfo, {
                     retryInterval = retry;
                 }, onmessage)));
 
-                onclose?.();
+                await onclose?.();
                 dispose();
                 resolve();
             } catch (err) {
-                if (!curRequestController.signal.aborted) {
+                if (!currentController.signal.aborted) {
                     // if we haven't aborted the request ourselves:
                     try {
                         // check if we need to retry:
                         const interval: any = onerror?.(err) ?? retryInterval;
-                        window.clearTimeout(retryTimer);
-                        retryTimer = window.setTimeout(create, interval);
+                        globalThis.clearTimeout(retryTimer);
+                        retryTimer = globalThis.setTimeout(create, interval);
                     } catch (innerErr) {
                         // we should not retry anymore:
                         dispose();
