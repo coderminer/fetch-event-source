@@ -1,6 +1,6 @@
 {
   "name": "@coderminer/fetch-event-source",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "A better API for making Event Source requests, with all the features of fetch() - maintained fork of @microsoft/fetch-event-source",
   "keywords": [
     "eventsource",

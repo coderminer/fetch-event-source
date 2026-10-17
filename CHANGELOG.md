@@ -1,5 +1,8 @@
 # CHANGELOG
 
+## 3.0.1
+- **Packaging:** published 3.0.0 carried no `keywords` field (the work landed after its publish); this patch release exists purely to ship it — add npm discoverability keywords (`eventsource`, `server-sent-events`, `sse`, `fetch`, `streaming`, `fetch-event-source`, ...). No functional changes.
+
 ## 3.0.0
 First release of the maintained community fork, published as [`@coderminer/fetch-event-source`](https://www.npmjs.com/package/@coderminer/fetch-event-source). The upstream [`@microsoft/fetch-event-source`](https://github.com/Azure/fetch-event-source) is archived at 2.0.2 and receives no further releases; this fork ships that baseline plus every fix documented in the 2.0.2 section below (that work post-dates the last upstream publish and was never released under the upstream name), plus the packaging/coverage/hygiene modernization noted there.
 
