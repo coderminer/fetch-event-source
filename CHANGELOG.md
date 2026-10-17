@@ -11,6 +11,14 @@
 - `FetchEventSourceInit` extends `Omit<RequestInit, 'headers'>` so the function form does not fight the DOM `HeadersInit` type
 - README: connection-lifecycle guidance (abort *is* the close mechanism), `openWhenHidden` mechanics, per-attempt header evaluation, retry scheduling and the mapped issue links above
 
+### Fixed
+- **Aborting inside `onerror` no longer leaks connections:** the abort resolves the whole operation (via the caller signal), but `scheduleRetry` could still arm a retry (or leave one armed) afterwards, spawning connections nobody owns — most easily triggered now that `idleTimeoutMs` hands a `TimeoutError` to `onerror` and the README documents abort as the close mechanism. `scheduleRetry` refuses to arm when the input signal is aborted, and `create()` re-checks the signal on entry (a retry timer armed pre-abort can never open a connection)
+- **`last-event-id` no longer resurrects after a server reset:** 3.0.x deleted the header when the server sent an empty `id:` field, but the per-attempt normalization reintroduced the caller's (static or headers-function) value on later attempts. The tracked id is now three-state: the caller's value passes through until the first server `id:`; a non-empty id wins per the SSE spec; an empty `id:` deletes the header on the next attempt (+specs)
+- **Hidden pages no longer reconnect:** a retry timer could fire while `document.hidden`, and a stale timer could abort the healthy connection the visible-edge handler just created. `onVisibilityChange` clears any pending retry timer; nothing connects while hidden, and the visible edge opens the next attempt exactly once
+- **`idleTimeoutMs: Infinity` disabled-fix:** `setTimeout` clamps `Infinity` (and huge values) to ~0/1ms with a `TimeoutOverflowWarning`, arming an instant-abort timer; the timer now requires a finite positive value
+- **`maxRetryIntervalMs` below the base applies from the first automatic retry** (previously the first retry could exceed the cap; the ramp resets to the capped base as well)
+- Docs honesty pass: the handshake-deadline example explains that `AbortSignal.timeout` caps the *whole* connection and shows the onopen-cleared caller-side alternative instead; `AbortSignal.any` availability lists Node.js 18.17+; old engines without abort reasons get the `AbortError`-vs-`TimeoutError` caveat; stale `onerror` JSDoc ("after 1 second") refreshed
+
 ## 3.0.1
 - **Packaging:** published 3.0.0 carried no `keywords` field (the work landed after its publish); this patch release exists purely to ship it — add npm discoverability keywords (`eventsource`, `server-sent-events`, `sse`, `fetch`, `streaming`, `fetch-event-source`, ...). No functional changes.
 
