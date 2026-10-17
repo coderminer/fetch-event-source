@@ -6,7 +6,8 @@
     "exclude": [
         "coverage/",
         "**/*.d.ts",
-        "**/*.cjs"
+        "**/*.cjs",
+        "**/*.spec.*"
     ],
     "require": [
         "source-map-support/register"

@@ -1,6 +1,7 @@
 .github/
 .nyc_output/
 coverage/
+scripts/
 lib/**/*.spec.*
 src/*.spec.ts
 .nycrc

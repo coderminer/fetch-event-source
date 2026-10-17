@@ -29,7 +29,7 @@
 ### Changed
 - Restored the missing `npm test` script and `jasmine`/`nyc` devDependencies that were accidentally removed in the v2.0.1 "dependabot fix"; `npm test` now runs a build first
 - CI pins action SHAs (#108), adds a Dependabot config, and runs on Node 18.x/20.x (the lockfile is lockfileVersion 2, which npm 6 on Node 12/14 cannot install)
-- `posttest` now scans the shipped sources/docs for automation tool-payload remnants (`scripts/check-tool-fragments.cjs`), so a stray editing-tool fragment can never be committed/published again; `.nycrc` drops the legacy `all: true` sweep (and excludes `*.d.ts`/`*.cjs` artifacts) so coverage totals reflect actually-loaded output
+- `posttest` now scans the shipped sources/docs for automation tool-payload remnants (`scripts/check-tool-fragments.cjs`; it walks `src/` plus the docs so new files are covered automatically, honors inline `scan-exempt` markers, and cannot self-trigger); `scripts/` is not published (`.npmignore`); `.nycrc` drops the legacy `all: true` sweep and excludes spec/`.d.ts`/`.cjs` artifacts so coverage totals reflect the library source only
 
 ## 2.0.1
 This release adds support for esmodule imports (see #4).
