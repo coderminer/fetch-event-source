@@ -5,14 +5,26 @@ export const EventStreamContentType = 'text/event-stream';
 const DefaultRetryInterval = 1000;
 const LastEventId = 'last-event-id';
 
-export interface FetchEventSourceInit extends RequestInit {
+/**
+ * Any of the request-header input shapes this library and fetch() accept.
+ */
+type HeadersSource = Record<string, string> | Headers | [string, string][];
+
+export interface FetchEventSourceInit extends Omit<RequestInit, 'headers'> {
     /**
      * The request headers. Supports the Record<string,string>, Headers and
-     * string-pair-array formats; all are normalized into a single copy
-     * (lowercased keys, duplicates comma-joined like Header.append) which is
-     * then mutated with the last-event-id header on retries.
+     * string-pair-array formats; all are normalized into a copy (lowercased
+     * keys, duplicates comma-joined like Header.append) which is then mutated
+     * with the last-event-id header on retries.
+     *
+     * A function may be given instead, evaluated once per (re)connection, so
+     * values are computed fresh per attempt (e.g. tokens that rotate while the
+     * connection lives). It may return any accepted format, synchronously or
+     * as a promise. A tracked last event id from previous attempts always
+     * wins over whatever the function returns for `last-event-id`, per the
+     * SSE spec.
      */
-    headers?: Record<string, string> | Headers | [string, string][],
+    headers?: HeadersSource | (() => HeadersSource | Promise<HeadersSource>),
 
     /**
      * Called when a response is received. Use this to validate that the response
@@ -58,6 +70,35 @@ export interface FetchEventSourceInit extends RequestInit {
      */
     openWhenHidden?: boolean;
 
+    /**
+     * How long to wait between automatic retries, in ms (default 1000).
+     * Intervals returned from onerror always take precedence over this value.
+     */
+    retryIntervalMs?: number;
+
+    /**
+     * Optional cap for exponential backoff between automatic retries. When
+     * set, every consecutive automatic retry doubles the base interval
+     * (retryIntervalMs → 2x → 4x → …) until the cap is reached; the interval
+     * resets to its base once a connection is successfully established again
+     * (onopen resolves). Intervals explicitly returned from onerror are
+     * honored as given and never fed into the backoff, and while the server
+     * sends `retry:` field values, they replace the whole automatic schedule.
+     */
+    maxRetryIntervalMs?: number;
+
+    /**
+     * Close-and-retry the current attempt when no bytes (not even comment
+     * heartbeats) have arrived for this long, in ms. Reverse proxies and dead
+     * networks can kill a connection without signaling it; a stall like that
+     * is treated as a retriable error and routed through onerror. The idle
+     * timer runs only while the body stream is being read (i.e. after onopen
+     * resolved); a stalled handshake is better handled by combining
+     * `AbortSignal.timeout` into the init `signal`. Disabled by default: a
+     * silent SSE server is legal, so no timer exists unless you ask for one.
+     */
+    idleTimeoutMs?: number;
+
     /** The Fetch function to use. Defaults to globalThis.fetch */
     fetch?: typeof fetch;
 }
@@ -70,6 +111,9 @@ export function fetchEventSource(input: RequestInfo, {
     onclose,
     onerror,
     openWhenHidden,
+    retryIntervalMs: inputRetryIntervalMs,
+    maxRetryIntervalMs,
+    idleTimeoutMs,
     fetch: inputFetch,
     ...rest
 }: FetchEventSourceInit) {
@@ -78,35 +122,85 @@ export function fetchEventSource(input: RequestInfo, {
         return Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
-        // normalize all three accepted header forms into one working copy with
-        // lowercased keys and comma-joined duplicate values, matching the
-        // Headers append/combine semantics; the copy (not the caller's input)
-        // is mutated with the last-event-id header on retries. We check for a
-        // global Headers constructor before using it: schemas such as
-        // fetch polyfills may provide fetch without it, and instances from
-        // other realms fail instanceof anyway:
-        // null prototype so header names like `constructor` or `__proto__`
-        // (e.g. from a JSON.parse'd config) are stored as plain own
+        // The last event id observed on the current stream, sent back as the
+        // last-event-id header of the next attempt and cleared again when the
+        // server resets the id. Tracked separately from the caller's headers:
+        // header inputs are normalized fresh per (re)connection (see create),
+        // so state has to survive into the new copies:
+        let lastEventId = '';
+
+        // The server-controlled reconnection time, set by `retry:` field
+        // values and honored until the server sends a different one:
+        let serverRetryInterval: number | undefined;
+
+        // next automatic retry interval for exponential backoff: it grows only
+        // while maxRetryIntervalMs is configured, caps there, and resets to
+        // the base whenever a connection is successfully established:
+        const baseRetryInterval = inputRetryIntervalMs ?? DefaultRetryInterval;
+        let backoffNext = baseRetryInterval;
+
+        let retryTimer = 0;
+        let stopReconnecting = false;
+
+        // (re)normalize a header input into a fresh null-prototype working
+        // copy with lowercased keys and comma-joined duplicate values,
+        // matching the Headers append/combine semantics; the copy (not the
+        // caller's input) is then mutated with the last-event-id header of
+        // the attempt. We check for a global Headers constructor before
+        // using it: schemas such as fetch polyfills may provide fetch
+        // without it, and instances from other realms fail instanceof anyway;
+        // the null prototype keeps header names like `constructor` or
+        // `__proto__` (e.g. from a JSON.parse'd config) stored as plain own
         // properties instead of hitting the prototype chain:
-        let headers: Record<string, string> = Object.create(null);
-        const setHeader = (key: string, value: string) => {
-            key = key.toLowerCase();
-            headers[key] = key in headers ? `${headers[key]}, ${value}` : value;
-        };
-        if (Array.isArray(inputHeaders)) {
-            inputHeaders.forEach(([key, value]) => setHeader(key, value));
-        } else if (typeof Headers !== 'undefined' && inputHeaders instanceof Headers) {
-            // Headers#forEach passes (value, key); normalize to (key, value):
-            inputHeaders.forEach((value: string, key: string) => setHeader(key, value));
-        } else if (inputHeaders && typeof (inputHeaders as any).forEach === 'function') {
-            // duck-typed Headers-like (polyfills, other realms) follow the same
-            // Headers#forEach (value, key) contract:
-            (inputHeaders as any).forEach((value: any, key: any) => setHeader(key, value));
-        } else {
-            Object.keys(inputHeaders ?? {}).forEach((key) => setHeader(key, (inputHeaders as any)[key]));
+        function normalizeHeaders(input: HeadersSource | undefined | null): Record<string, string> {
+            const copy = Object.create(null);
+            const setHeader = (key: string, value: string) => {
+                key = key.toLowerCase();
+                copy[key] = key in copy ? `${copy[key]}, ${value}` : value;
+            };
+            if (Array.isArray(input)) {
+                input.forEach(([key, value]) => setHeader(key, value));
+            } else if (typeof Headers !== 'undefined' && input instanceof Headers) {
+                // Headers#forEach passes (value, key); normalize to (key, value):
+                input.forEach((value: string, key: string) => setHeader(key, value));
+            } else if (input && typeof (input as any).forEach === 'function') {
+                // duck-typed Headers-like (polyfills, other realms) follow the
+                // same Headers#forEach (value, key) contract:
+                (input as any).forEach((value: any, key: any) => setHeader(key, value));
+            } else {
+                Object.keys(input ?? {}).forEach((key) => setHeader(key, (input as any)[key]));
+            }
+            if (!copy.accept) {
+                copy.accept = EventStreamContentType;
+            }
+            return copy;
         }
-        if (!headers.accept) {
-            headers.accept = EventStreamContentType;
+
+        function scheduleRetry(err: any) {
+            globalThis.clearTimeout(retryTimer);
+            // explicit, per-error intervals returned from onerror take
+            // precedence and are never fed into the backoff; the automatic
+            // path also prefers a server-sent `retry:` interval, if the
+            // server has sent one:
+            let explicit: number | null | undefined;
+            try {
+                // onerror may return void (the callback equivalent of leaving
+                // the automatic path); fold that into the interval union:
+                explicit = onerror?.(err) as number | null | undefined;
+            } catch (onerrorErr) {
+                // an onerror that throws means we should not retry anymore:
+                dispose();
+                reject(onerrorErr);
+                return;
+            }
+            const interval = explicit === undefined || explicit === null
+                ? (serverRetryInterval ?? backoffNext)
+                : explicit;
+            retryTimer = globalThis.setTimeout(create, interval);
+            // only automatic retries ramp up, capped at the configured maximum:
+            if (explicit == null && maxRetryIntervalMs != null) {
+                backoffNext = Math.min(backoffNext * 2, maxRetryIntervalMs);
+            }
         }
 
         let curRequestController: AbortController;
@@ -121,9 +215,6 @@ export function fetchEventSource(input: RequestInfo, {
             globalThis.document?.addEventListener('visibilitychange', onVisibilityChange);
         }
 
-        let retryInterval = DefaultRetryInterval;
-        let retryTimer = 0;
-        let stopReconnecting = false;
         function dispose() {
             globalThis.document?.removeEventListener('visibilitychange', onVisibilityChange);
             inputSignal?.removeEventListener('abort', onAbort);
@@ -148,6 +239,22 @@ export function fetchEventSource(input: RequestInfo, {
             // can't be confused by a newer attempt racing ahead of this one:
             const currentController = new AbortController();
             curRequestController = currentController;
+            // per-attempt idle-stall machinery: attempt-scoped state dies with
+            // its attempt, the fire callback aborts only this attempt's own
+            // controller, and the finally-clear below keeps a stale timer from
+            // ever firing into a later attempt:
+            let idleTimer = 0;
+            let idleFired = false;
+            const resetIdle = () => {
+                if (!idleTimeoutMs) {
+                    return;
+                }
+                globalThis.clearTimeout(idleTimer);
+                idleTimer = globalThis.setTimeout(() => {
+                    idleFired = true;
+                    currentController.abort(new DOMException(`No bytes received for ${idleTimeoutMs}ms`, 'TimeoutError'));
+                }, idleTimeoutMs);
+            };
             try {
                 // a Request body can only be read once, so each attempt gets
                 // its own clone of the input (the original is never consumed,
@@ -157,6 +264,20 @@ export function fetchEventSource(input: RequestInfo, {
                 const attemptInput = typeof Request !== 'undefined' && input instanceof Request
                     ? input.clone()
                     : input;
+                // headers are normalized per attempt: given a function, its
+                // values must be computed fresh for each (re)connection, and
+                // the fresh copy carries the tracked last event id so
+                // successive attempts stay spec-correct:
+                const headers = normalizeHeaders(
+                    typeof inputHeaders === 'function'
+                        ? await inputHeaders()
+                        : inputHeaders,
+                );
+                if (lastEventId) {
+                    // the server-assigned id governs: it always wins over
+                    // whatever the caller supplied for the same field:
+                    headers[LastEventId] = lastEventId;
+                }
                 const response = await fetch(attemptInput, {
                     ...rest,
                     headers,
@@ -178,50 +299,67 @@ export function fetchEventSource(input: RequestInfo, {
 
                 await onopen(response);
 
-                await getBytes(response, getLines(getMessages(id => {
+                // a successful reconnection resets the backoff schedule:
+                backoffNext = baseRetryInterval;
+
+                // every arriving block of bytes re-arms the idle timer, whether
+                // or not it parses into a full message (comment heartbeats
+                // count as connectivity):
+                const linesChunk = getLines(getMessages(id => {
                     if (id) {
-                        // store the id and send it back on the next retry:
-                        headers[LastEventId] = id;
+                        lastEventId = id;
                     } else {
-                        // don't send the last-event-id header anymore:
-                        delete headers[LastEventId];
+                        lastEventId = '';
                     }
                 }, retry => {
-                    retryInterval = retry;
-                }, onmessage)));
+                    serverRetryInterval = retry;
+                }, onmessage));
+                const onChunk = (arr: Uint8Array) => {
+                    resetIdle();
+                    linesChunk(arr);
+                };
+
+                // arm the idle detector just ahead of the byte read, so the
+                // opening-to-first-byte gap is covered too:
+                resetIdle();
+                await getBytes(response, onChunk);
 
                 await onclose?.();
                 dispose();
                 resolve();
             } catch (err) {
-                if (!currentController.signal.aborted) {
-                    // if we haven't aborted the request ourselves:
-                    if (stopReconnecting) {
-                        // the server told us to stop reconnecting (204):
-                        dispose();
-                        try {
-                            // surface the stop to onerror-centric callers who do
-                            // not await the returned promise; the interval it
-                            // may return is meaningless (no retry follows):
-                            onerror?.(err);
-                        } catch (stopErr) {
-                            // an onerror that throws overrides the outcome:
-                            err = stopErr;
-                        }
-                        reject(err);
-                        return;
-                    }
-                    try {
-                        // check if we need to retry:
-                        const interval: any = onerror?.(err) ?? retryInterval;
-                        globalThis.clearTimeout(retryTimer);
-                        retryTimer = globalThis.setTimeout(create, interval);
-                    } catch (innerErr) {
-                        // we should not retry anymore:
-                        dispose();
-                        reject(innerErr);
-                    }
+                if (currentController.signal.aborted && !idleFired) {
+                    // aborted from the outside: a caller abort (disposed and
+                    // resolved elsewhere), a visibility switch (create() is
+                    // coming), or a superseded attempt (the newer attempt
+                    // aborted this one). None of these schedule anything:
+                    return;
                 }
+                if (idleFired && curRequestController !== currentController) {
+                    // an idle timer that outlived its attempt must not inject
+                    // a retry into a newer attempt's schedule (the finally
+                    // below clears the pending timer, but an already-firing
+                    // callback can race an abort like any timeout callback):
+                    return;
+                }
+                if (stopReconnecting) {
+                    // the server told us to stop reconnecting (204):
+                    dispose();
+                    try {
+                        // surface the stop to onerror-centric callers who do
+                        // not await the returned promise; the interval it
+                        // may return is meaningless (no retry follows):
+                        onerror?.(err);
+                    } catch (stopErr) {
+                        // an onerror that throws overrides the outcome:
+                        err = stopErr;
+                    }
+                    reject(err);
+                    return;
+                }
+                scheduleRetry(err);
+            } finally {
+                globalThis.clearTimeout(idleTimer);
             }
         }
 

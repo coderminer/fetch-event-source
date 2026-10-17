@@ -325,6 +325,280 @@ describe('fetch', () => {
             await expectAsync(promise).toBeRejectedWithError('user-custom-stop');
             expect(fetchSpy.calls.count()).toBe(1);
         });
+
+        it('evaluates a headers function once per attempt, keeping last-event-id on top', async () => {
+            // arrange: attempt 1 delivers a message carrying an id and then
+            // dies mid-stream, so attempt 2 must both re-evaluate the header
+            // function AND carry the tracked last-event-id forward into its
+            // own freshly normalized copy:
+            const encoder = new TextEncoder();
+            let calls = 0;
+            let pullCount = 0;
+            const headersFn = jasmine
+                .createSpy('headers')
+                .and.callFake(() => ({ 'x-request-id': `req-${calls}` }));
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake(() => {
+                ++calls;
+                return calls === 1
+                    ? Promise.resolve(new Response(
+                        new ReadableStream({
+                            // pull()-based so the chunk is delivered on the
+                            // first read and the failure on the second: a
+                            // start()-style enqueue+error in one go would
+                            // DISCARD the chunk (error() clears the queue),
+                            // losing bytes a real server would have sent:
+                            pull(controller) {
+                                if (++pullCount === 1) {
+                                    controller.enqueue(encoder.encode('id: ev-1\ndata: hi\n\n'));
+                                } else {
+                                    controller.error(new Error('midstream cut'));
+                                }
+                            },
+                        }),
+                        { headers: { 'content-type': 'text/event-stream' } },
+                    ))
+                    : Promise.resolve(new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            });
+
+            // act:
+            await fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                headers: headersFn,
+                onopen: async () => { },
+                onclose: async () => { },
+                onerror: () => 0, // retry immediately
+                fetch: fetchSpy as any,
+            });
+
+            // assert:
+            expect(headersFn).toHaveBeenCalledTimes(2); // fresh per attempt
+            const attempt1 = (fetchSpy.calls.argsFor(0)[1] as RequestInit).headers as Record<string, string>;
+            expect(attempt1['x-request-id']).toBe('req-0');
+            expect(attempt1['last-event-id']).toBeUndefined();
+            const attempt2 = (fetchSpy.calls.argsFor(1)[1] as RequestInit).headers as Record<string, string>;
+            expect(attempt2['x-request-id']).toBe('req-1');
+            // the server-assigned id survives into the fresh copy and, per the
+            // SSE spec, wins over anything the caller's function may hand back:
+            expect(attempt2['last-event-id']).toBe('ev-1');
+        });
+
+        it('awaits headers functions that return a promise', async () => {
+            // arrange:
+            const fetchSpy = jasmine.createSpy('fetch').and.resolveTo(
+                new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+
+            // act:
+            await fetch.fetchEventSource('/api/sse', {
+                headers: async () => new Headers({ 'x-token': 'async-value' }),
+                onopen: async () => { },
+                onclose: async () => { },
+                fetch: fetchSpy as any,
+            });
+
+            // assert:
+            const sent = (fetchSpy.calls.argsFor(0)[1] as RequestInit).headers as Record<string, string>;
+            expect(sent['x-token']).toBe('async-value');
+            expect(sent.accept).toBe('text/event-stream'); // default injected as usual
+        });
+
+        it('honors retryIntervalMs as the base automatic retry interval', async () => {
+            // arrange: spy the scheduler (passing through) so delays can be
+            // asserted without racing real timers; only attempts are timed:
+            const setTimeoutSpy = spyOn(globalThis, 'setTimeout').and.callThrough();
+            let calls = 0;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake(() => {
+                ++calls;
+                return calls < 3
+                    ? Promise.reject(new Error('gateway down'))
+                    : Promise.resolve(new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                retryIntervalMs: 25,
+                onopen: async () => { },
+                onclose: async () => { },
+                fetch: fetchSpy as any,
+            });
+            while (calls < 3) {
+                await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+            }
+            await promise;
+
+            // assert: two automatic retries were scheduled with the base interval:
+            const scheduled = setTimeoutSpy.calls.allArgs().filter((args: any[]) => args[1] === 25);
+            expect(scheduled.length).toBe(2);
+            expect(fetchSpy.calls.count()).toBe(3);
+        });
+
+        it('resets exponential backoff after every successful open', async () => {
+            // arrange: two failed attempts ramp the interval 10 → 20; a third
+            // attempt opens fine but its stream dies mid-flight, which must
+            // NOT keep ramping (the schedule resets to the base on open):
+            const setTimeoutSpy = spyOn(globalThis, 'setTimeout').and.callThrough();
+            const encoder = new TextEncoder();
+            let calls = 0;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake(() => {
+                ++calls;
+                return calls === 1 || calls === 2
+                    ? Promise.reject(new Error('gateway down'))
+                    : calls === 3
+                        ? Promise.resolve(new Response(
+                            new ReadableStream({
+                                start(controller) {
+                                    controller.enqueue(encoder.encode('data: partial\n\n'));
+                                    controller.error(new Error('midstream cut'));
+                                },
+                            }),
+                            { headers: { 'content-type': 'text/event-stream' } },
+                        ))
+                        : calls === 4
+                            ? Promise.reject(new Error('gateway down again'))
+                            : Promise.resolve(new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                retryIntervalMs: 10,
+                maxRetryIntervalMs: 30,
+                onopen: async () => { },
+                onclose: async () => { },
+                fetch: fetchSpy as any,
+            });
+            while (calls < 5) {
+                await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+            }
+            await promise;
+
+            // assert: 5 attempts, 4 retries; the ramp restarts at 10 after the
+            // successful third attempt instead of continuing to 40:
+            const scheduled = setTimeoutSpy.calls.allArgs()
+                .filter((args: any[]) => args[1] === 10 || args[1] === 20)
+                .map((args: any[]) => args[1]);
+            expect(scheduled).toEqual([10, 20, 10, 20]);
+        });
+
+        it('caps exponential backoff at maxRetryIntervalMs', async () => {
+            // arrange: with base 10 and cap 15, consecutive failures schedule
+            // 10, 15, 15, 15 - the doubled value (20/40/80) never exceeds the cap:
+            const setTimeoutSpy = spyOn(globalThis, 'setTimeout').and.callThrough();
+            let calls = 0;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake(() => {
+                ++calls;
+                return calls < 5
+                    ? Promise.reject(new Error('gateway down'))
+                    : Promise.resolve(new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                retryIntervalMs: 10,
+                maxRetryIntervalMs: 15,
+                onopen: async () => { },
+                onclose: async () => { },
+                fetch: fetchSpy as any,
+            });
+            while (calls < 5) {
+                await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+            }
+            await promise;
+
+            // assert:
+            const scheduled = setTimeoutSpy.calls.allArgs()
+                .filter((args: any[]) => args[1] === 10 || args[1] === 15)
+                .map((args: any[]) => args[1]);
+            expect(scheduled).toEqual([10, 15, 15, 15]);
+        });
+
+        it('treats a byte-less stall as a retriable TimeoutError when idleTimeoutMs is set', async () => {
+            // arrange: the first attempt's stream (read after onopen resolved)
+            // never delivers a byte; aborting it rejects the pending read,
+            // like a real reverse-proxy-killed connection does:
+            const hangingStreamResponse = (signal: AbortSignal) => ({
+                ok: true,
+                status: 200,
+                headers: { get: () => 'text/event-stream' },
+                body: {
+                    getReader: () => ({
+                        read: () => new Promise<never>((_resolve, reject) => {
+                            signal.addEventListener('abort', () => reject(signal.reason));
+                        }),
+                        cancel: async () => { },
+                    }),
+                },
+            } as unknown as Response);
+            const onerrorSpy = jasmine.createSpy('onerror').and.returnValue(0); // retry immediately
+            let calls = 0;
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake((_input: any, init: RequestInit) => {
+                ++calls;
+                return calls === 1
+                    ? Promise.resolve(hangingStreamResponse(init.signal as AbortSignal))
+                    : Promise.resolve(new Response('', { headers: { 'content-type': 'text/event-stream' } }));
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                openWhenHidden: true,
+                idleTimeoutMs: 20,
+                onopen: async () => { },
+                onerror: onerrorSpy,
+                fetch: fetchSpy as any,
+            });
+            while (calls < 2) {
+                await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+            }
+            await promise;
+
+            // assert: the stall surfaced as the abort reason (a TimeoutError
+            // DOMException) through the standard onerror path, and the retry
+            // recovered on an eventually-closing second attempt:
+            const stallError = onerrorSpy.calls.argsFor(0)[0] as DOMException;
+            expect(stallError.name).toBe('TimeoutError');
+            expect(fetchSpy.calls.count()).toBe(2);
+        });
+
+        it('arms no idle timer by default and an abort still resolves quietly', async () => {
+            // arrange: without idleTimeoutMs nothing ever flags the stall;
+            // hanging forever is legal SSE. Aborting the caller signal later
+            // resolves the promise without any error-routing:
+            const ctrl = new AbortController();
+            const onerrorSpy = jasmine.createSpy('onerror');
+            const hangingStreamResponse = (signal: AbortSignal) => ({
+                ok: true,
+                status: 200,
+                headers: { get: () => 'text/event-stream' },
+                body: {
+                    getReader: () => ({
+                        read: () => new Promise<never>((_resolve, reject) => {
+                            signal.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')));
+                        }),
+                        cancel: async () => { },
+                    }),
+                },
+            } as unknown as Response);
+            const fetchSpy = jasmine.createSpy('fetch').and.callFake((_input: any, init: RequestInit) => {
+                return Promise.resolve(hangingStreamResponse(init.signal as AbortSignal));
+            });
+
+            // act:
+            const promise = fetch.fetchEventSource('/api/sse', {
+                signal: ctrl.signal,
+                openWhenHidden: true,
+                onopen: async () => { },
+                onerror: onerrorSpy,
+                fetch: fetchSpy as any,
+            });
+            await new Promise(resolve => globalThis.setTimeout(resolve, 40)); // well past any test-sized idle window
+            ctrl.abort();
+            await promise;
+
+            // assert:
+            expect(onerrorSpy).not.toHaveBeenCalled();
+            expect(fetchSpy.calls.count()).toBe(1); // no retry followed the abort
+        });
     });
 
     describe('index barrel', () => {

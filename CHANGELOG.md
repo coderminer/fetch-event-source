@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 3.1.0
+### Added
+- **Headers:** `headers` also accepts a function, evaluated once per (re)connection so values are computed fresh per attempt (rotating tokens etc.); it may return any accepted header format, synchronously or as a promise. The tracked `last-event-id` of the previous stream always wins over the function's value for that field, per the SSE spec (see #33, upstream PR #67)
+- **Retries:** `retryIntervalMs` (default 1000 — behavior unchanged when unset) and `maxRetryIntervalMs`, which turns consecutive automatic retries into an exponential ramp capped at that value; the ramp resets after each successful reconnection. Intervals explicitly returned from `onerror` take precedence and are never fed into the backoff; a server-sent `retry:` field value replaces the automatic schedule while the server keeps sending it (see #57, upstream PR #63)
+- **Liveness:** `idleTimeoutMs` closes and retries the current attempt when no bytes — not even comment-line heartbeats — arrive for that long, routing the stall through the standard `onerror` path as a `TimeoutError`; the timer runs only while the body stream is read and is disabled by default, since a silent server is legal SSE (see #79, #73, #30, #17)
+- Node.js 18+ support is now documented (`engines` field added; the code was already `globalThis`-based and runs on undici)
+
+### Changed
+- `FetchEventSourceInit` extends `Omit<RequestInit, 'headers'>` so the function form does not fight the DOM `HeadersInit` type
+- README: connection-lifecycle guidance (abort *is* the close mechanism), `openWhenHidden` mechanics, per-attempt header evaluation, retry scheduling and the mapped issue links above
+
 ## 3.0.1
 - **Packaging:** published 3.0.0 carried no `keywords` field (the work landed after its publish); this patch release exists purely to ship it — add npm discoverability keywords (`eventsource`, `server-sent-events`, `sse`, `fetch`, `streaming`, `fetch-event-source`, ...). No functional changes.
 

@@ -1,6 +1,6 @@
 {
   "name": "@coderminer/fetch-event-source",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "description": "A better API for making Event Source requests, with all the features of fetch() - maintained fork of @microsoft/fetch-event-source",
   "keywords": [
     "eventsource",
@@ -26,6 +26,9 @@
   "module": "lib/esm/index.js",
   "types": "lib/cjs/index.d.ts",
   "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "clean": "rimraf ./lib ./coverage",
     "prebuild": "npm run clean",
