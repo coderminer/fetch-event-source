@@ -19,6 +19,8 @@
     "build": "tsc && tsc -p tsconfig.esm.json",
     "pretest": "npm run build",
     "test": "nyc jasmine --config=jasmine.json",
+    "posttest": "npm run check:fragments",
+    "check:fragments": "node scripts/check-tool-fragments.cjs",
     "prepublishOnly": "npm run build && npm run test"
   },
   "devDependencies": {

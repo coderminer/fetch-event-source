@@ -487,8 +487,10 @@ describe('parse', () => {
         });
 
         it('strips a UTF-8 byte order mark even when it is split across chunks, per spec', async () => {
-            // arrange: feed the three BOM bytes through two separate chunks; a
-            // streaming decoder must still recognize and drop the composite:
+            // arrange: feed the three BOM bytes through two separate chunks;
+            // getLines buffers chunks into a whole line before decoding, so
+            // the first complete line always starts with the composite BOM,
+            // whose leading bytes the line decode strips:
             const payload = encoder.encode('data: split-bom\n\n');
             const chunk2 = new Uint8Array(2 + payload.length);
             chunk2[0] = 0xbb;

@@ -20,9 +20,11 @@ export interface EventSourceMessage {
  * @returns {Promise<void>} A promise that will be resolved when the stream closes.
  */
 export async function getBytes(response: Response, onChunk: (arr: Uint8Array) => void) {
-    // No explicit BOM handling here: getLines decodes the byte slices with a
-    // default TextDecoder, whose spec-mandated UTF-8 decode strips one leading
-    // BOM — including one that is split across chunks:
+    // No explicit BOM handling here: getLines buffers incoming chunks into
+    // whole lines and decodes each complete line with a default TextDecoder,
+    // whose spec-mandated UTF-8 decode strips a leading BOM — which therefore
+    // arrives in the first line intact, even when the stream delivers it in
+    // separate chunks (no streaming decode is involved):
     const reader = response.body?.getReader();
     if (reader) {
         let result: ReadableStreamReadResult<Uint8Array>;

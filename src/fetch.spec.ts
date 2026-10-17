@@ -112,7 +112,10 @@ describe('fetch', () => {
             expect(Object.keys(initHeaders3).filter(k => k !== 'accept')).toEqual([]);
             // a null-prototype working copy keeps exotic names as own
             // properties, so they are sent as-is instead of being dropped,
-            // merged with an inherited value, or hijacking the prototype:
+            // merged with an inherited value, or hijacking the prototype.
+            // This asserts at the library's own boundary: end-to-end
+            // transmission of `__proto__` still depends on the platform's
+            // Headers implementation (undici, unlike `constructor`, drops it):
             const initHeaders4 = (fetchSpy.calls.argsFor(3)[1] as RequestInit).headers as Record<string, string>;
             expect(initHeaders4['x-y']).toBe('z');
             expect(Object.getOwnPropertyDescriptor(initHeaders4, '__proto__')!.value).toBe('weird');

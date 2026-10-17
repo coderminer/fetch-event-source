@@ -5,7 +5,7 @@
 - **Parsing (spec):** a message whose data buffer is empty is no longer dispatched to `onmessage`, and the event-type buffer is still cleared, exactly as in the [dispatch step of the SSE spec](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation); comment-only / id-only / retry-only blocks no longer fire `onmessage` with empty data (see #15)
 - **Parsing (spec):** a line without a colon is now processed as a field whose name is the entire line and whose value is the empty string, per the spec (previously such lines were skipped entirely)
 - **Parsing (spec):** an `id` field value containing U+0000 NULL is now ignored per the spec (previously it overwrote the stored id and was sent back as `Last-Event-ID`)
-- **Parsing (spec):** the byte stream is decoded with a default spec-compliant `TextDecoder`, whose UTF-8 decode strips one leading BOM — including one that is split across chunks; this end-to-end behavior (previously untested) is now pinned by tests, and `getBytes` relies on the decoder instead of a redundant explicit strip
+- **Parsing (spec):** the byte stream is decoded with a default spec-compliant `TextDecoder`, whose UTF-8 decode strips one leading BOM; chunks are buffered into whole lines before decoding, so the strip is correct even when the stream delivers the BOM in pieces; this end-to-end behavior (previously untested) is now pinned by tests, and `getBytes` relies on the decoder instead of a redundant explicit strip
 - **Retries (spec):** a `204` response with the default `onopen` now stops reconnection and rejects the promise, per the spec's "re-establish for a 204 means the client stops reconnecting" rule; previously the client kept retrying every second against a server that told it to stop. `onerror` is still invoked (any returned retry interval is ignored, and an error thrown from it overrides the rejection) so unawaited, onerror-centric callers are notified; `onclose` is not fired. A custom `onopen` keeps full control as before
 - **Retries (spec):** after a connection follows a redirect, string inputs are re-targeted at the final URL (`response.url`) for the next reconnection, matching native `EventSource`
 - **Default onopen (spec):** now requires a `200` response (not merely any 2xx) and a content-type whose case-insensitive MIME essence is exactly `text/event-stream`, per the open-the-connection step of the spec; `text/event-stream;charset=utf-8` still passes, `text/event-stream/foo` and stray whitespace/parameter games no longer do
@@ -29,6 +29,7 @@
 ### Changed
 - Restored the missing `npm test` script and `jasmine`/`nyc` devDependencies that were accidentally removed in the v2.0.1 "dependabot fix"; `npm test` now runs a build first
 - CI pins action SHAs (#108), adds a Dependabot config, and runs on Node 18.x/20.x (the lockfile is lockfileVersion 2, which npm 6 on Node 12/14 cannot install)
+- `posttest` now scans the shipped sources/docs for automation tool-payload remnants (`scripts/check-tool-fragments.cjs`), so a stray editing-tool fragment can never be committed/published again; `.nycrc` drops the legacy `all: true` sweep (and excludes `*.d.ts`/`*.cjs` artifacts) so coverage totals reflect actually-loaded output
 
 ## 2.0.1
 This release adds support for esmodule imports (see #4).
